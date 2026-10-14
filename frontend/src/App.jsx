@@ -138,6 +138,8 @@ function App() {
   const [tenantPasswordConfirm, setTenantPasswordConfirm] = useState('');
   const [initialTenantPassword, setInitialTenantPassword] = useState('');
   const [initialTenantPasswordConfirm, setInitialTenantPasswordConfirm] = useState('');
+  const [editingTenantPassword, setEditingTenantPassword] = useState('');
+  const [editingTenantPasswordConfirm, setEditingTenantPasswordConfirm] = useState('');
   const [planForm, setPlanForm] = useState(emptyPlan);
   const [editingPlanId, setEditingPlanId] = useState(null);
   const [patientForm, setPatientForm] = useState(emptyPatient);
@@ -468,26 +470,44 @@ function App() {
 
   const handleTenantSubmit = async (event) => {
     event.preventDefault();
-    if (!editingTenantId && initialTenantPassword !== initialTenantPasswordConfirm) {
+    setNotice('');
+    setError('');
+    const isSettingInitialPassword = !editingTenantId;
+    const isChangingTenantPassword = Boolean(editingTenantId && (editingTenantPassword || editingTenantPasswordConfirm));
+    if (isChangingTenantPassword && (!editingTenantPassword || !editingTenantPasswordConfirm)) {
+      setError('Enter and confirm the new administrator password.');
+      return;
+    }
+    if (isChangingTenantPassword && editingTenantPassword !== editingTenantPasswordConfirm) {
+      setError('The administrator passwords do not match.');
+      return;
+    }
+    if (isSettingInitialPassword && initialTenantPassword !== initialTenantPasswordConfirm) {
       setError('The administrator passwords do not match.');
       return;
     }
     setBusy(true);
-    setNotice('');
-    setError('');
     try {
       const data = await request(editingTenantId ? `/api/tenants/${editingTenantId}` : '/api/tenants/onboard', {
         method: editingTenantId ? 'PUT' : 'POST',
         body: JSON.stringify(editingTenantId ? tenantForm : { ...tenantForm, admin_password: initialTenantPassword }),
       });
+      if (isChangingTenantPassword) {
+        await request(`/api/tenants/${editingTenantId}/password`, {
+          method: 'PUT',
+          body: JSON.stringify({ password: editingTenantPassword }),
+        });
+      }
       setNotice(editingTenantId
-        ? `${data.tenant.name} was updated.`
+        ? `${data.tenant.name} was updated${isChangingTenantPassword ? ' and its administrator password was changed' : ''}.`
         : data.tenant.password_set
           ? `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. The administrator password you set is active; share it securely.`
           : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. One-time password: ${data.tenant.temporary_password}.`);
       setTenantForm(emptyTenant);
       setInitialTenantPassword('');
       setInitialTenantPasswordConfirm('');
+      setEditingTenantPassword('');
+      setEditingTenantPasswordConfirm('');
       setEditingTenantId(null);
       await loadAdminData();
     } catch (submitError) {
@@ -499,8 +519,13 @@ function App() {
 
   const editTenant = (tenant) => {
     setEditingTenantId(tenant.id);
+    setPasswordTenantId(null);
+    setTenantPassword('');
+    setTenantPasswordConfirm('');
     setInitialTenantPassword('');
     setInitialTenantPasswordConfirm('');
+    setEditingTenantPassword('');
+    setEditingTenantPasswordConfirm('');
     setTenantForm({
       tenant_name: tenant.name,
       tenant_domain: tenant.domain,
@@ -1214,12 +1239,13 @@ function App() {
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>
                       {!editingTenantId && <><div className="col-md-6"><label className="form-label" htmlFor="new-tenant-password">Administrator password</label><input id="new-tenant-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={initialTenantPassword} onChange={(event) => setInitialTenantPassword(event.target.value)} /><small className="text-muted">10–72 characters; password length is limited by bcrypt.</small></div><div className="col-md-6"><label className="form-label" htmlFor="confirm-new-tenant-password">Confirm administrator password</label><input id="confirm-new-tenant-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={initialTenantPasswordConfirm} onChange={(event) => setInitialTenantPasswordConfirm(event.target.value)} /></div></>}
+                      {editingTenantId && <div className="col-12 border-top pt-3 mt-2"><h5 className="mb-1">Tenant administrator password</h5><p className="text-muted">Enter a new password here to change it. Leave both fields blank to keep the current password.</p><div className="row g-3"><div className="col-md-6"><label className="form-label" htmlFor="edit-tenant-password">New password</label><input id="edit-tenant-password" className="form-control" type="password" autoComplete="new-password" minLength="10" maxLength="72" value={editingTenantPassword} onChange={(event) => setEditingTenantPassword(event.target.value)} /></div><div className="col-md-6"><label className="form-label" htmlFor="confirm-edit-tenant-password">Confirm new password</label><input id="confirm-edit-tenant-password" className="form-control" type="password" autoComplete="new-password" minLength="10" maxLength="72" value={editingTenantPasswordConfirm} onChange={(event) => setEditingTenantPasswordConfirm(event.target.value)} /></div></div></div>}
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-plan">Plan</label><select id="tenant-plan" className="form-select" value={tenantForm.plan} onChange={(event) => setTenantForm({ ...tenantForm, plan: event.target.value })}>{(plans.length ? plans : [{ id: 'starter', name: 'Starter' }, { id: 'growth', name: 'Growth' }, { id: 'enterprise', name: 'Enterprise' }]).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-cycle">Billing cycle</label><select id="tenant-cycle" className="form-select" value={tenantForm.billing_cycle} onChange={(event) => setTenantForm({ ...tenantForm, billing_cycle: event.target.value })}><option value="monthly">Monthly</option><option value="annual">Annual</option></select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-region">Region</label><input id="tenant-region" className="form-control" required value={tenantForm.region} onChange={(event) => setTenantForm({ ...tenantForm, region: event.target.value })} /></div>
                       {editingTenantId && <div className="col-md-3"><label className="form-label" htmlFor="tenant-status">Subscription status</label><select id="tenant-status" className="form-select" value={tenantForm.subscription_status} onChange={(event) => setTenantForm({ ...tenantForm, subscription_status: event.target.value })}><option value="active">Active</option><option value="paused">Paused</option></select></div>}
                     </div>
-                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? 'Save tenant' : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setTenantForm(emptyTenant); setInitialTenantPassword(''); setInitialTenantPasswordConfirm(''); }}>Clear form</button>}</div>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? (editingTenantPassword || editingTenantPasswordConfirm ? 'Save tenant & password' : 'Save tenant') : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); setEditingTenantPassword(''); setEditingTenantPasswordConfirm(''); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setTenantForm(emptyTenant); setInitialTenantPassword(''); setInitialTenantPasswordConfirm(''); }}>Clear form</button>}</div>
                   </form>
                   </div>
                 </div>
