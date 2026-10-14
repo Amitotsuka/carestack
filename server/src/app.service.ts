@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import { Pool } from 'pg';
 
 type TenantUser = {
   id: string;
@@ -78,7 +80,7 @@ const defaultClinicContext = { address: '', services: [] as string[], doctors: [
 const defaultVoiceAgent = { enabled: true, availability: 'business_hours' as const, open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', appointment_duration_minutes: 30, clinic_context: defaultClinicContext };
 const defaultTelephony = { provider: 'exotel' as const, voice_provider: 'sarvam' as const, exotel_voicebot_id: '', phone_number: '', account_sid: '', app_id: '', region: 'mumbai' as const, enabled: false };
 
-export class AppService {
+export class AppService implements OnModuleInit, OnModuleDestroy {
   private tenants: Record<string, Tenant> = {};
   private clinicInterests: ClinicInterest[] = [];
   private readonly superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'superadmin@hospital.ai')).trim().toLowerCase();
@@ -90,11 +92,21 @@ export class AppService {
     { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
     { id: 'enterprise', name: 'Enterprise', monthly_price: 39999, annual_price: 399990, clinic_limit: null, user_limit: null },
   ];
-  private readonly database: Database.Database;
+  private database?: Database.Database;
+  private postgres?: Pool;
+  private pendingPostgresWrite: Promise<void> = Promise.resolve();
 
   constructor() {
+    const databaseUrl = process.env.DATABASE_URL?.trim();
+    if (databaseUrl) {
+      this.postgres = new Pool({ connectionString: databaseUrl });
+      return;
+    }
+
+    // SQLite is kept for local development. Render UAT uses DATABASE_URL,
+    // which selects PostgreSQL and avoids relying on a persistent disk.
     const defaultDatabasePath = process.env.NODE_ENV === 'production'
-      ? '/var/data/hospital.sqlite'
+      ? '/tmp/hospital.sqlite'
       : path.resolve(__dirname, '..', 'data', 'hospital.sqlite');
     const databasePath = process.env.DATABASE_PATH || defaultDatabasePath;
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -112,24 +124,42 @@ export class AppService {
 
     const savedState = this.database.prepare('SELECT payload FROM app_state WHERE id = 1').get() as { payload: string } | undefined;
     if (savedState) {
-      const state = JSON.parse(savedState.payload) as { tenants?: Record<string, Tenant & { users: Array<TenantUser & { password?: string }> }>; planCatalog?: Plan[]; clinicInterests?: ClinicInterest[] };
-      this.tenants = state.tenants || {};
-      this.planCatalog = state.planCatalog || this.planCatalog;
-      this.clinicInterests = state.clinicInterests || [];
-      this.migratePasswordHashes();
+      if (this.loadState(savedState.payload)) this.persistState();
     } else {
       if (process.env.NODE_ENV !== 'production') this.seed();
       this.persistState();
     }
 
-    if (process.env.NODE_ENV === 'production') {
-      const hasDemoPassword = Object.values(this.tenants).some((tenant) =>
-        tenant.users.some((user) => bcrypt.compareSync('admin123', user.password_hash)),
-      );
-      if (hasDemoPassword) {
-        throw new Error('A tenant still uses the demo password. Rotate credentials or configure a clean production DATABASE_PATH before startup.');
-      }
+  }
+
+  async onModuleInit() {
+    if (!this.postgres) return;
+    await this.postgres.query(`
+      CREATE TABLE IF NOT EXISTS app_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      )
+    `);
+    const result = await this.postgres.query<{ payload: unknown }>('SELECT payload FROM app_state WHERE id = 1');
+    if (result.rows[0]) {
+      if (this.loadState(result.rows[0].payload as string | object)) await this.writePostgresState();
+    } else {
+      await this.writePostgresState();
     }
+  }
+
+  async onModuleDestroy() {
+    await this.pendingPostgresWrite;
+    await this.postgres?.end();
+  }
+
+  private loadState(payload: string | object) {
+    const state = (typeof payload === 'string' ? JSON.parse(payload) : payload) as { tenants?: Record<string, Tenant & { users: Array<TenantUser & { password?: string }> }>; planCatalog?: Plan[]; clinicInterests?: ClinicInterest[] };
+    this.tenants = state.tenants || {};
+    this.planCatalog = state.planCatalog || this.planCatalog;
+    this.clinicInterests = state.clinicInterests || [];
+    return this.migratePasswordHashes();
   }
 
   private migratePasswordHashes() {
@@ -150,18 +180,39 @@ export class AppService {
         delete legacyUser.password;
         migrated = true;
       }
+      if (process.env.NODE_ENV === 'production' && bcrypt.compareSync('admin123', user.password_hash)) {
+        // Imported demo users stay in the UAT data, but their known local
+        // password cannot be used on the public service.
+        user.password_hash = bcrypt.hashSync(randomBytes(24).toString('base64url'), 12);
+        migrated = true;
+      }
       });
     });
-    if (migrated) this.persistState();
+    return migrated;
   }
 
   private persistState() {
     const payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests });
-    this.database.prepare(`
+    if (this.postgres) {
+      this.pendingPostgresWrite = this.pendingPostgresWrite
+        .catch(() => undefined)
+        .then(() => this.writePostgresState(payload));
+      return;
+    }
+    this.database!.prepare(`
       INSERT INTO app_state (id, payload, updated_at)
       VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
     `).run(payload, new Date().toISOString());
+  }
+
+  private async writePostgresState(payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests })) {
+    if (!this.postgres) return;
+    await this.postgres.query(`
+      INSERT INTO app_state (id, payload, updated_at)
+      VALUES (1, $1::jsonb, NOW())
+      ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+    `, [payload]);
   }
 
   private seed() {

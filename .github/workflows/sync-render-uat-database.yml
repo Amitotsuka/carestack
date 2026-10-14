@@ -1,0 +1,51 @@
+name: Sync Render UAT database
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment: Test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - name: Set the Render API database URL
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+        run: |
+          test -n "$RENDER_API_KEY"
+          test -n "$RENDER_SERVICE_ID"
+          test -n "$RENDER_DATABASE_URL"
+          curl --fail --silent --show-error --request PUT \
+            --url "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars/DATABASE_URL" \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -n --arg value "$RENDER_DATABASE_URL" '{value: $value}')"
+      - name: Import the local SQLite app state
+        env:
+          POSTGRES_EXTERNAL_URL: ${{ secrets.POSTGRES_EXTERNAL_URL }}
+          CARESTACK_UAT_STATE_B64: ${{ secrets.CARESTACK_UAT_STATE_B64 }}
+        run: node scripts/import-state-to-postgres.cjs
+        working-directory: server
+      - name: Redeploy the Render API
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          curl --fail --silent --show-error --request POST \
+            --url "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys" \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data '{}'
