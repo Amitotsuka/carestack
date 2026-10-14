@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
 
@@ -72,6 +72,7 @@ type Tenant = {
     exotel_api_key_encrypted?: string; exotel_api_token_encrypted?: string;
     sarvam_org_id?: string; sarvam_workspace_id?: string; sarvam_agent_id?: string; sarvam_agent_version?: number;
     sarvam_connection_id?: string; sarvam_deployment_id?: string;
+    voice_tool_secret_hash?: string;
   };
 };
 type ClinicInterest = { id: string; clinic_name: string; contact_name: string; email: string; phone: string; plan: string; created_at: string };
@@ -693,12 +694,16 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       }
     }
     const savedSelected: Record<string, any> = { ...selected, phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled, exotel_voicebot_id: exotelVoicebotId };
+    const voiceToolSecret = this.getVoiceToolSecret(tenantId);
     providerConfigs[voiceProvider] = savedSelected;
     tenant.telephony = {
       provider: 'exotel', voice_provider: voiceProvider, exotel_voicebot_id: exotelVoicebotId,
       phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled, provider_configs: providerConfigs,
       exotel_api_key_encrypted: apiKey ? this.encryptCredential(apiKey) : existing?.exotel_api_key_encrypted,
       exotel_api_token_encrypted: apiToken ? this.encryptCredential(apiToken) : existing?.exotel_api_token_encrypted,
+      voice_tool_secret_hash: voiceToolSecret
+        ? createHash('sha256').update(voiceToolSecret).digest('hex')
+        : existing?.voice_tool_secret_hash,
       sarvam_org_id: String(savedSelected.sarvam_org_id || '').trim(),
       sarvam_workspace_id: String(savedSelected.sarvam_workspace_id || '').trim(),
       sarvam_agent_id: String(savedSelected.sarvam_agent_id || '').trim(),
@@ -713,7 +718,12 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   private publicTelephony(config: Tenant['telephony']) {
     if (!config) return { ...defaultTelephony, credentials_configured: false, deployment_status: 'not_configured' };
     const voiceProvider = config.voice_provider || 'sarvam';
-    const { exotel_api_key_encrypted: _encryptedKey, exotel_api_token_encrypted: _encryptedToken, ...publicConfig } = config;
+    const {
+      exotel_api_key_encrypted: _encryptedKey,
+      exotel_api_token_encrypted: _encryptedToken,
+      voice_tool_secret_hash: _voiceToolSecretHash,
+      ...publicConfig
+    } = config;
     const exotelCredentialsConfigured = Boolean(
       (config.exotel_api_key_encrypted && config.exotel_api_token_encrypted) || (process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN),
     );
@@ -797,6 +807,13 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   validateVoiceToolSecret(tenantId: string, suppliedSecret: string) {
+    const savedHash = this.tenants[tenantId]?.telephony?.voice_tool_secret_hash;
+    const suppliedHash = createHash('sha256').update(suppliedSecret || '').digest();
+    if (savedHash) {
+      const expectedHash = Buffer.from(savedHash, 'hex');
+      if (expectedHash.length === suppliedHash.length && timingSafeEqual(expectedHash, suppliedHash)) return true;
+    }
+
     const master = process.env.VOICE_TOOL_SECRET || '';
     if (master.length < 32) return false;
     const expected = Buffer.from(createHmac('sha256', master).update(tenantId).digest('hex'));
