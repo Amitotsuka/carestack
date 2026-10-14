@@ -1,4 +1,4 @@
-# Hospital Agent Portal
+# CareStack Hospital Agent Portal
 
 This project follows a hybrid architecture:
 
