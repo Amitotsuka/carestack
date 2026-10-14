@@ -21,8 +21,9 @@ Never commit any of these values to Git.
 ## Import local data once
 
 1. In a terminal, run `cd server && npm run export:sqlite-state`.
-2. Copy the single line of output into the `CARESTACK_UAT_STATE_B64` GitHub
-   secret. It contains clinic data and must remain secret.
+2. Copy only the single Base64 output line into the `CARESTACK_UAT_STATE_B64`
+   GitHub secret. Do not copy the command, terminal prompt, or quotation marks.
+   It contains clinic data and must remain secret.
 3. In GitHub, open **Actions → Sync Render UAT database → Run workflow**.
 
 The workflow sets `DATABASE_URL` on the Render API, creates the `app_state`

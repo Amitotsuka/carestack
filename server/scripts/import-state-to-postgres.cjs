@@ -7,7 +7,17 @@ const { Client } = require('pg');
 
 function readPayload() {
   if (process.env.CARESTACK_UAT_STATE_B64) {
-    return Buffer.from(process.env.CARESTACK_UAT_STATE_B64, 'base64').toString('utf8');
+    const encoded = process.env.CARESTACK_UAT_STATE_B64.replace(/\s/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+      throw new Error('CARESTACK_UAT_STATE_B64 is not valid Base64. Replace it with the exact one-line output from npm run export:sqlite-state.');
+    }
+    const payload = Buffer.from(encoded, 'base64').toString('utf8');
+    const canonicalInput = encoded.replace(/=+$/, '');
+    const canonicalPayload = Buffer.from(payload, 'utf8').toString('base64').replace(/=+$/, '');
+    if (canonicalInput !== canonicalPayload) {
+      throw new Error('CARESTACK_UAT_STATE_B64 is incomplete or changed. Generate it again with npm run export:sqlite-state and replace the GitHub secret.');
+    }
+    return payload;
   }
   const databasePath = process.env.LOCAL_SQLITE_PATH || path.resolve(__dirname, '..', 'data', 'hospital.sqlite');
   if (!fs.existsSync(databasePath)) throw new Error(`SQLite database not found: ${databasePath}`);
