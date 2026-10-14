@@ -3,7 +3,7 @@ services:
     name: carestack-uat-agent
     runtime: python
     plan: 0.5c-512mb
-    region: singapore
+    region: oregon
     branch: main
     rootDir: backend
     buildCommand: pip install -r requirements.txt
@@ -16,10 +16,12 @@ services:
         value: "10000"
 
   - type: web
-    name: carestack-uat-api
+    # Match the existing Render service so the first Blueprint sync corrects
+    # its root directory and commands instead of creating a second API.
+    name: carestack
     runtime: node
     plan: 0.5c-512mb
-    region: singapore
+    region: oregon
     branch: main
     rootDir: server
     buildCommand: npm ci && npm run build
@@ -30,6 +32,7 @@ services:
       name: carestack-uat-sqlite
       mountPath: /var/data
       sizeGB: 1
+    numInstances: 1
     envVars:
       - key: NODE_VERSION
         value: "24.21.0"
@@ -69,5 +72,5 @@ services:
       - key: VITE_API_URL
         fromService:
           type: web
-          name: carestack-uat-api
+          name: carestack
           envVarKey: RENDER_EXTERNAL_URL
