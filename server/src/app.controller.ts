@@ -268,7 +268,8 @@ export class AppController {
   updateTenantTelephony(@Param('tenantId') tenantId: string, @Body() body: any) {
     const config = this.appService.updateTenantTelephony(tenantId, body || {});
     if (config === null) throw new NotFoundException('Clinic not found');
-    if (!config) throw new BadRequestException('Use a unique international format phone number and complete the Sarvam deployment settings.');
+    if (config && 'error' in config) throw new BadRequestException(config.error);
+    if (!config) throw new BadRequestException('Calling settings were not saved. Check the selected provider and its phone number, then try again.');
     return { telephony: config, voice_tool_secret: this.appService.getVoiceToolSecret(tenantId), message: 'Clinic calling settings saved.' };
   }
 

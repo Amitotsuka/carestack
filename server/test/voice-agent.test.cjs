@@ -211,3 +211,54 @@ test('Exotel form credentials are encrypted at rest and omitted from public sett
     assert.equal(authorization, `Basic ${Buffer.from('clinic-api-key:clinic-api-token').toString('base64')}`);
   } finally { global.fetch = priorFetch; }
 });
+
+test('Sarvam and Exotel calling settings remain isolated when switching providers', () => {
+  const { AppService } = require('../dist/app.service.js');
+  const service = Object.create(AppService.prototype);
+  process.env.CREDENTIALS_ENCRYPTION_KEY = 'test-encryption-secret-at-least-32-characters';
+  const tenant = { id: 'tenant-provider-split', patients: [], bookings: [] };
+  service.tenants = { [tenant.id]: tenant };
+  service.persistState = () => {};
+  service.updateTenantTelephony(tenant.id, {
+    voice_provider: 'exotel_voicebot', phone_number: '+919876543211', account_sid: 'exotel-account', app_id: 'exotel-flow',
+    region: 'mumbai', exotel_voicebot_id: 'voicebot-1', exotel_api_key: 'private-key', exotel_api_token: 'private-token',
+  });
+  service.updateTenantTelephony(tenant.id, {
+    voice_provider: 'sarvam', phone_number: '+919876543212', account_sid: 'sarvam-account', app_id: 'sarvam-flow', region: 'singapore',
+    sarvam_org_id: 'org-1', sarvam_workspace_id: 'workspace-1', sarvam_agent_id: 'agent-1', sarvam_agent_version: 2, sarvam_connection_id: 'connection-1',
+  });
+  assert.equal(tenant.telephony.phone_number, '+919876543212');
+  assert.equal(tenant.telephony.account_sid, 'sarvam-account');
+  assert.equal(tenant.telephony.provider_configs.exotel_voicebot.phone_number, '+919876543211');
+  assert.equal(tenant.telephony.provider_configs.exotel_voicebot.app_id, 'exotel-flow');
+  assert.equal(tenant.telephony.provider_configs.sarvam.phone_number, '+919876543212');
+  assert.equal(tenant.telephony.provider_configs.sarvam.sarvam_agent_id, 'agent-1');
+  const publicConfig = service.updateTenantTelephony(tenant.id, {
+    voice_provider: 'exotel_voicebot', ...tenant.telephony.provider_configs.exotel_voicebot,
+  });
+  assert.equal(publicConfig.phone_number, '+919876543211');
+  assert.equal(publicConfig.account_sid, 'exotel-account');
+  assert.equal(publicConfig.provider_configs.sarvam.phone_number, '+919876543212');
+  assert.equal('exotel_api_key' in publicConfig.provider_configs.exotel_voicebot, false);
+  assert.equal(tenant.telephony.exotel_api_key_encrypted === 'private-key', false);
+});
+
+test('calling setup reports specific phone number validation errors', async () => {
+  const { AppService } = require('../dist/app.service.js');
+  const { AppController } = require('../dist/app.controller.js');
+  const service = Object.create(AppService.prototype);
+  service.tenants = {
+    'clinic-one': { id: 'clinic-one', patients: [], bookings: [] },
+    'clinic-two': { id: 'clinic-two', patients: [], bookings: [], telephony: { phone_number: '+919876543210', voice_provider: 'exotel_voicebot' } },
+  };
+  service.persistState = () => {};
+  const controller = new AppController(service, null);
+  assert.throws(
+    () => controller.updateTenantTelephony('clinic-one', { voice_provider: 'sarvam', phone_number: '01143060445' }),
+    (error) => /international E\.164 format/.test(error.response.message),
+  );
+  assert.throws(
+    () => controller.updateTenantTelephony('clinic-one', { voice_provider: 'sarvam', phone_number: '+919876543210' }),
+    (error) => /already assigned to another clinic/.test(error.response.message),
+  );
+});

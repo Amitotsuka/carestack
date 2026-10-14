@@ -51,12 +51,6 @@ services:
         generateValue: true
       - key: VOICE_TOOL_SECRET
         generateValue: true
-      - key: SUPER_ADMIN_EMAIL
-        sync: false
-      - key: SUPER_ADMIN_PASSWORD
-        sync: false
-      - key: CORS_ORIGINS
-        sync: false
 
   - type: web
     runtime: static

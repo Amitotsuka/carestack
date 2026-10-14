@@ -11,15 +11,17 @@ dotenv.config();
 async function bootstrap() {
   const isProduction = process.env.NODE_ENV === 'production';
   if (isProduction) {
-    const missing = ['JWT_SECRET', 'SUPER_ADMIN_EMAIL', 'SUPER_ADMIN_PASSWORD', 'CORS_ORIGINS']
-      .filter((key) => !process.env[key]);
-    if (missing.length) throw new Error(`Missing required production environment variables: ${missing.join(', ')}`);
     if ((process.env.JWT_SECRET || '').length < 32) throw new Error('JWT_SECRET must be at least 32 characters');
-    if ((process.env.SUPER_ADMIN_PASSWORD || '').length < 14) throw new Error('SUPER_ADMIN_PASSWORD must be at least 14 characters');
+    if (process.env.SUPER_ADMIN_PASSWORD && process.env.SUPER_ADMIN_PASSWORD.length < 14) {
+      throw new Error('SUPER_ADMIN_PASSWORD must be at least 14 characters when configured');
+    }
   }
 
   const app = await NestFactory.create(AppModule);
-  const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:5175,http://skycare.localhost:5175')
+  const defaultOrigins = isProduction
+    ? 'https://carestack-uat-web.onrender.com'
+    : 'http://localhost:5173,http://localhost:5175,http://skycare.localhost:5175';
+  const allowedOrigins = (process.env.CORS_ORIGINS || defaultOrigins)
     .split(',').map((origin) => origin.trim()).filter(Boolean);
   app.enableCors({
     origin: (origin, callback) => {

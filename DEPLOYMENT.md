@@ -6,16 +6,18 @@ The repository includes a Render Blueprint (`render.yaml`) for a UAT environment
 - `carestack`: NestJS API with a persistent SQLite disk mounted at `/var/data`. This name matches the existing Render service so Blueprint sync updates its broken root directory and commands instead of creating a duplicate API.
 - `carestack-uat-agent`: private FastAPI service used by the booking workflow.
 
+The public frontend is `https://carestack-uat-web.onrender.com`. Clinic portal links use that shared URL with a `?tenant=<slug>` query parameter; local development keeps its `*.localhost` hosts. The frontend calls the separate `carestack` API URL supplied by Render.
+
 The API and private agent use Oregon because the existing `carestack` service is already there and Render's private service networking is regional. The Node API disk and private agent require paid compute; a free web service has an ephemeral filesystem and cannot safely hold the SQLite database. The disk-backed API is single-instance and has brief downtime during deploys, so this setup is intended for UAT rather than a scaled production deployment.
 
 ## First deployment
 
 1. Push the repository to GitHub `main` and create a Render account.
 2. In Render, choose **New → Blueprint**, connect `Amitotsuka/carestack`, select `main`, and apply the root `render.yaml`. The `carestack` entry matches the existing service; review the pending change before applying it.
-3. During Blueprint setup, provide `SUPER_ADMIN_EMAIL`, a unique `SUPER_ADMIN_PASSWORD` of at least 14 characters, and `CORS_ORIGINS` set to the public static-site origin shown in Render. Render generates the JWT, provider-encryption, and voice-tool secrets.
-4. Render builds and deploys the API, frontend, and private agent. The API's `DATABASE_PATH` points to `/var/data/hospital.sqlite` on its persistent disk. This starts with an empty UAT database; clinic and appointment data are not copied from the developer laptop.
+3. Render generates `JWT_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`, and `VOICE_TOOL_SECRET`. `JWT_SECRET` is the only environment variable required for the API to start in production. You can optionally set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` to enable super-admin login; without both values, super-admin login is disabled. `CORS_ORIGINS` is optional and defaults to `https://carestack-uat-web.onrender.com`; set it only if the frontend uses a different origin.
+4. Render builds and deploys the API, frontend, and private agent. The API stores SQLite at `/var/data/hospital.sqlite`. The `carestack` service must have the `/var/data` persistent disk from the Blueprint attached for data to survive restarts and deploys. A fresh database starts empty; pushing code does not copy the developer laptop's local records.
 5. Render supplies the API's public URL to the Vite build as `VITE_API_URL`. If you later change the frontend domain, update `CORS_ORIGINS` in the API service and redeploy it.
-6. Open the frontend URL, sign in with the configured super-admin email/password, and onboard a UAT clinic. Keep its provider credentials and patient data separate from production.
+6. Open `https://carestack-uat-web.onrender.com`. If you configured both super-admin variables, sign in with those credentials and onboard a UAT clinic. Tenant portal links use the same URL with the clinic slug, such as `?tenant=skycare`. Keep provider credentials and patient data separate from production.
 7. For Exotel testing, use the API URL plus `/api/voice/tools/<tenant-id>` and the clinic-specific voice-tool secret shown after saving the clinic calling settings. Exotel needs this public HTTPS URL; localhost will not work from Exotel's cloud.
 
 ## CI and deploys

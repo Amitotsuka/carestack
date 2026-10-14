@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const PUBLIC_APP_URL = 'https://carestack-uat-web.onrender.com';
+const PUBLIC_API_URL = 'https://carestack-6psq.onrender.com';
+const API_URL = import.meta.env.VITE_API_URL || (
+  typeof window !== 'undefined' && window.location.hostname === new URL(PUBLIC_APP_URL).hostname
+    ? PUBLIC_API_URL
+    : 'http://localhost:3001'
+);
 const emptyPatient = { name: '', phone: '', email: '', age: '', notes: '', status: 'active' };
 const emptyBooking = { patient_name: '', phone_number: '', doctor_name: 'Dr. Sarah Chen', appointment_date: '', appointment_time: '', reason: 'General consultation' };
 const emptyTenant = { tenant_name: '', tenant_domain: '', admin_name: '', admin_email: '', admin_phone: '', plan: 'growth', billing_cycle: 'monthly', subscription_status: 'active', region: 'India' };
 const emptyPlan = { id: '', name: '', monthly_price: '', annual_price: '', clinic_limit: '', user_limit: '' };
 const defaultVoiceAgent = { enabled: true, availability: 'business_hours', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', appointment_duration_minutes: 30, clinic_context: { address: '', services: [], doctors: [], fees: '', languages: ['Hindi', 'Hinglish', 'English'], instructions: '', faqs: [] } };
 const emptyTelephony = { phone_number: '', account_sid: '', app_id: '', region: 'mumbai', enabled: false, exotel_api_key: '', exotel_api_token: '', sarvam_org_id: '', sarvam_workspace_id: '', sarvam_agent_id: '', sarvam_agent_version: '', sarvam_connection_id: '' };
+const telephonyConfigFields = ['phone_number', 'account_sid', 'app_id', 'region', 'enabled', 'exotel_voicebot_id', 'sarvam_org_id', 'sarvam_workspace_id', 'sarvam_agent_id', 'sarvam_agent_version', 'sarvam_connection_id'];
+const emptyProviderTelephony = Object.fromEntries(telephonyConfigFields.map((key) => [key, key === 'region' ? 'mumbai' : key === 'enabled' ? false : '']));
+const providerTelephonyDefaults = { sarvam: { ...emptyProviderTelephony }, exotel_voicebot: { ...emptyProviderTelephony } };
 const emptyClinicInterest = { clinic_name: '', contact_name: '', email: '', phone: '', plan: 'growth' };
 
 const request = async (path, options = {}) => {
@@ -36,6 +45,18 @@ const request = async (path, options = {}) => {
   return data;
 };
 
+const getTenantPortalUrl = (domain) => {
+  if (typeof window === 'undefined') return `${PUBLIC_APP_URL}/?tenant=${encodeURIComponent(domain)}`;
+  const url = new URL(window.location.href);
+  const localHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname.endsWith('.localhost');
+  url.pathname = '/';
+  url.search = '';
+  url.hash = '';
+  if (localHost) url.hostname = `${domain}.localhost`;
+  else url.searchParams.set('tenant', domain);
+  return url.toString();
+};
+
 const getTenantBrand = () => {
   if (typeof window === 'undefined') {
     return {
@@ -50,7 +71,10 @@ const getTenantBrand = () => {
 
   const host = window.location.hostname.toLowerCase().replace(/^www\./, '');
   const parts = host.split('.');
-  const subdomain = parts[0] && parts[0] !== 'localhost' ? parts[0] : 'skycare';
+  const requestedTenant = new URLSearchParams(window.location.search).get('tenant')?.trim().toLowerCase();
+  const localTenant = host.endsWith('.localhost') ? parts[0] : '';
+  const isAppRoot = host === 'localhost' || host === '127.0.0.1' || host === PUBLIC_APP_URL.replace(/^https?:\/\//, '');
+  const subdomain = requestedTenant || localTenant || (isAppRoot ? 'skycare' : parts[0]) || 'skycare';
 
   const aliasMap = {
     skycare: {
@@ -187,7 +211,7 @@ function App() {
         if (hostTenant.id !== parsed.tenant_id || hostTenant.subscription_status !== 'active') {
           localStorage.removeItem('carestack-session');
           setPage('login');
-          setError(`This session is not active for ${tenantBrand.domain}.localhost. Sign in with this clinic's account.`);
+          setError(`This session is not active for the ${tenantBrand.domain} clinic workspace. Sign in with this clinic's account.`);
           return;
         }
         setSession(parsed);
@@ -239,7 +263,7 @@ function App() {
       if (user.role !== 'super_admin') {
         const hostTenant = await request(`/api/tenant/resolve/${encodeURIComponent(tenantBrand.domain)}`);
         if (!hostTenant || hostTenant.id !== user.tenant_id) {
-          throw new Error(`This account does not belong to ${tenantBrand.domain}.localhost.`);
+          throw new Error(`This account does not belong to the ${tenantBrand.domain} clinic workspace.`);
         }
       }
 
@@ -348,7 +372,11 @@ function App() {
     setVoiceToolSecret('');
     setExotelConnectionStatus('');
     setTelephonyTenantId(tenant.id);
-    setTelephonyForm({ ...emptyTelephony, ...(tenant.telephony || {}), exotel_api_key: '', exotel_api_token: '' });
+    const saved = tenant.telephony || {};
+    const provider_configs = { ...providerTelephonyDefaults, ...(saved.provider_configs || {}) };
+    const selectedProvider = saved.voice_provider || 'sarvam';
+    if (!saved.provider_configs?.[selectedProvider]) provider_configs[selectedProvider] = { ...provider_configs[selectedProvider], ...saved };
+    setTelephonyForm({ ...emptyTelephony, ...saved, ...provider_configs[selectedProvider], provider_configs, voice_provider: selectedProvider, exotel_api_key: '', exotel_api_token: '' });
     document.getElementById('clinic-telephony-form')?.scrollIntoView({ behavior: 'smooth' });
   };
 
@@ -357,14 +385,26 @@ function App() {
     if (!telephonyTenantId) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const saved = await request(`/api/tenants/${telephonyTenantId}/telephony`, { method: 'PUT', body: JSON.stringify(telephonyForm) });
+      const saved = await request(`/api/tenants/${telephonyTenantId}/telephony`, { method: 'PUT', body: JSON.stringify({ ...telephonyForm, provider_config: Object.fromEntries(telephonyConfigFields.map((key) => [key, telephonyForm[key]])) }) });
       setVoiceToolSecret(saved.voice_tool_secret || '');
-      setTelephonyForm({ ...emptyTelephony, ...(saved.telephony || {}), exotel_api_key: '', exotel_api_token: '' });
+      const savedConfig = saved.telephony || {};
+      const provider_configs = { ...providerTelephonyDefaults, ...(savedConfig.provider_configs || {}) };
+      setTelephonyForm({ ...emptyTelephony, ...savedConfig, ...provider_configs[savedConfig.voice_provider || telephonyForm.voice_provider], provider_configs, voice_provider: savedConfig.voice_provider || telephonyForm.voice_provider, exotel_api_key: '', exotel_api_token: '' });
       setNotice(saved.voice_tool_secret ? 'Calling configuration saved. Copy the clinic tool secret below into the Exotel Voicebot tools.' : 'Calling settings were saved, but voice booking tools are disabled. Set VOICE_TOOL_SECRET (at least 32 characters) on the API server before configuring Exotel tools.');
       await loadAdminData();
     } catch (saveError) { setError(saveError.message); }
     finally { setBusy(false); }
   };
+
+  const updateTelephonyField = (field, value) => setTelephonyForm((current) => {
+    const provider = current.voice_provider || 'sarvam';
+    return { ...current, [field]: value, provider_configs: { ...providerTelephonyDefaults, ...(current.provider_configs || {}), [provider]: { ...(current.provider_configs?.[provider] || {}), [field]: value } } };
+  });
+
+  const selectTelephonyProvider = (provider) => setTelephonyForm((current) => ({
+    ...current, ...providerTelephonyDefaults[provider], ...(current.provider_configs?.[provider] || {}),
+    voice_provider: provider, provider_configs: { ...providerTelephonyDefaults, ...(current.provider_configs || {}) }, exotel_api_key: '', exotel_api_token: '',
+  }));
 
   const activateClinicVoice = async (tenantId) => {
     if (!window.confirm('This creates an active inbound Sarvam deployment for the clinic number. Calls may incur Sarvam and Exotel charges. Continue?')) return;
@@ -433,7 +473,7 @@ function App() {
       });
       setNotice(editingTenantId
         ? `${data.tenant.name} was updated.`
-        : `${data.tenant.tenant_name} is ready at ${data.tenant.domain}.localhost. Admin: ${data.tenant.admin_email}. One-time password: ${data.tenant.temporary_password}.`);
+        : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. One-time password: ${data.tenant.temporary_password}.`);
       setTenantForm(emptyTenant);
       setEditingTenantId(null);
       await loadAdminData();
@@ -784,7 +824,7 @@ function App() {
       <section className="admin-panel">
         <div className="admin-panel-heading"><div><h3>Latest tenant accounts</h3><p>Recently provisioned workspaces</p></div><button className="btn btn-sm btn-primary" onClick={() => setActiveView('tenants')}>Manage tenants</button></div>
         <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Clinic</th><th>Portal</th><th>Plan</th><th>Subscription</th><th>Monthly value</th></tr></thead>
-          <tbody>{[...tenants].slice(-5).reverse().map((tenant) => <tr key={tenant.id}><td className="fw-semibold">{tenant.name}</td><td>{tenant.domain}.localhost</td><td className="text-capitalize">{tenant.plan}</td><td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status}</span></td><td>{formatCurrency(tenant.monthly_price)}</td></tr>)}{tenants.length === 0 && <tr><td colSpan="5" className="text-muted py-4">No tenant accounts yet.</td></tr>}</tbody>
+          <tbody>{[...tenants].slice(-5).reverse().map((tenant) => <tr key={tenant.id}><td className="fw-semibold">{tenant.name}</td><td><a href={getTenantPortalUrl(tenant.domain)}>{getTenantPortalUrl(tenant.domain)}</a></td><td className="text-capitalize">{tenant.plan}</td><td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status}</span></td><td>{formatCurrency(tenant.monthly_price)}</td></tr>)}{tenants.length === 0 && <tr><td colSpan="5" className="text-muted py-4">No tenant accounts yet.</td></tr>}</tbody>
         </table></div>
       </section>
     </>
@@ -821,7 +861,7 @@ function App() {
         <div className="table-responsive"><table className="table align-middle mb-0">
           <thead><tr><th>Clinic</th><th>Plan</th><th>Billing</th><th>Monthly value</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>{tenants.map((tenant) => <tr key={tenant.id}>
-            <td><div className="fw-semibold">{tenant.name}</div><small className="text-muted">{tenant.domain}.localhost</small></td>
+            <td><div className="fw-semibold">{tenant.name}</div><small><a href={getTenantPortalUrl(tenant.domain)}>{getTenantPortalUrl(tenant.domain)}</a></small></td>
             <td><select className="form-select form-select-sm plan-select" aria-label={`Plan for ${tenant.name}`} value={tenant.plan} onChange={(event) => updateSubscription(tenant.id, { plan: event.target.value })}>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></td>
             <td><select className="form-select form-select-sm cycle-select" aria-label={`Billing cycle for ${tenant.name}`} value={tenant.billing_cycle} onChange={(event) => updateSubscription(tenant.id, { billing_cycle: event.target.value })}><option value="monthly">Monthly</option><option value="annual">Annual</option></select></td>
             <td>{formatCurrency(tenant.monthly_price)}<small className="d-block text-muted">per month equivalent</small></td>
@@ -915,7 +955,7 @@ function App() {
           <button className="login-close" aria-label="Close sign in" onClick={() => setLoginOpen(false)}>×</button>
           <p className="section-kicker">CARESTACK ACCESS</p><h2 id="login-heading">Welcome back.</h2><p className="login-subtitle">Choose your workspace to continue.</p>
           <div className="login-role-switch" role="tablist" aria-label="Choose sign-in type"><button role="tab" aria-selected={loginRole === 'tenant'} className={loginRole === 'tenant' ? 'selected' : ''} onClick={() => openLogin('tenant')}>Clinic team</button><button role="tab" aria-selected={loginRole === 'super_admin'} className={loginRole === 'super_admin' ? 'selected' : ''} onClick={() => openLogin('super_admin')}>Platform admin</button></div>
-          <div className="login-clinic-label"><span>{loginRole === 'tenant' ? 'CLINIC WORKSPACE' : 'PLATFORM CONTROL'}</span><strong>{loginRole === 'tenant' ? tenantBrand.name : 'CareStack platform'}</strong>{loginRole === 'tenant' && <small>{tenantBrand.domain}.localhost</small>}</div>
+          <div className="login-clinic-label"><span>{loginRole === 'tenant' ? 'CLINIC WORKSPACE' : 'PLATFORM CONTROL'}</span><strong>{loginRole === 'tenant' ? tenantBrand.name : 'CareStack platform'}</strong>{loginRole === 'tenant' && <small>{tenantBrand.domain}</small>}</div>
           <form onSubmit={handleLogin}>
             <label htmlFor="site-login-email">Work email</label><input id="site-login-email" type="email" autoComplete="username" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
             <label htmlFor="site-login-password">Password</label><input id="site-login-password" type="password" autoComplete="current-password" required value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} />
@@ -1066,40 +1106,40 @@ function App() {
               {superAdmin && activeView === 'tenants' && <div className="card border-0 shadow-sm rounded-4 mb-4">
                 <div className="card-body">
                   <h4 className="mb-3">Tenant organizations</h4>
-                  {voiceToolSecret && <div className="alert alert-info" role="status"><strong>Connect this clinic’s Exotel IVR to CareStack booking</strong><p className="mb-2">This clinic-scoped secret lets the Exotel Voicebot call its CareStack tools. Copy it into the Exotel tool’s <code>x-voice-tool-secret</code> header. It is shown only in this admin session.</p><label className="form-label">Exotel reachable API base URL</label><input className="form-control font-monospace mb-2" value={voiceToolApiBaseUrl} onChange={(event) => { const value = event.target.value.trim().replace(/\/+$/, ''); setVoiceToolApiBaseUrl(value); try { localStorage.setItem('carestack-voice-tool-api-base-url', value); } catch {} }} placeholder="http://localhost:3001" /><small className="d-block text-muted mb-2">For local testing use <code>http://localhost:3001</code>; replace with public HTTPS when available.</small><label className="form-label">Clinic voice tool endpoint</label><input className="form-control font-monospace mb-2" readOnly value={`${voiceToolApiBaseUrl.replace(/\/+$/, '')}/api/voice/tools/${telephonyTenantId}`} onFocus={(event) => event.target.select()} />{/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(voiceToolApiBaseUrl) && <p className="alert alert-warning py-2">Exotel cloud cannot reach localhost. The local endpoint works for testing on this machine; calls from Exotel need a public HTTPS URL.</p>}<label className="form-label">Clinic tool secret</label><input className="form-control font-monospace" readOnly value={voiceToolSecret} onFocus={(event) => event.target.select()} /><div className="mt-3"><strong>Exotel console setup</strong><ol className="mb-2 mt-2"><li>In <b>Build Bot → Tool Integration</b>, create three active POST tools using the endpoint above and JSON request bodies below. Add header <code>x-voice-tool-secret</code> with the clinic secret.</li><li>Attach the tools to the clinic’s published Voicebot and map each value from the caller’s speech. Use ISO dates (<code>YYYY-MM-DD</code>) and 24-hour times (<code>HH:mm</code>).</li><li>In App Bazaar, connect <b>Greeting → IVR Menu</b>. Set “Press 1 for appointment booking” to the published booking Voicebot applet. Assign the saved app flow to this clinic’s ExoPhone.</li><li>Tell the bot to collect the patient’s name, callback number, doctor, date, time and reason; check availability; read all details back; get a clear yes; then call the booking tool. Read the confirmed booking ID back to the caller.</li></ol><details><summary>Tool request bodies</summary><p className="small mt-2 mb-1">Create a <code>carestack_clinic_info</code> tool with this body:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'clinic_info' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_check_availability</code> tool. Map date, time and doctor_name from the conversation:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'availability', date: 'YYYY-MM-DD', time: 'HH:mm', doctor_name: 'doctor name' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_book_appointment</code> tool. Map request_id to a unique ID per call, confirmed to true only after caller approval, and the remaining fields from the confirmed details:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'book', request_id: 'unique-call-id', confirmed: true, patient_name: 'patient name', phone_number: '+919876543210', doctor_name: 'doctor name', date: 'YYYY-MM-DD', time: 'HH:mm', reason: 'visit reason' }, null, 2)}</pre></details><p className="small mb-0"><b>Important:</b> Exotel must be able to reach this endpoint over public HTTPS. A localhost URL will not work from an Exotel call. A successful appointment appears immediately in this clinic’s CareStack appointments; booking hours, future dates, duplicate slots and caller confirmation are checked by the API.</p></div></div>}
+                  {voiceToolSecret && <div className="alert alert-info" role="status"><strong>Connect this clinic’s Exotel IVR to CareStack booking</strong><p className="mb-2">This clinic-scoped secret lets the Exotel Voicebot call its CareStack tools. Copy it into the Exotel tool’s <code>x-voice-tool-secret</code> header. It is shown only in this admin session.</p><label className="form-label">Exotel reachable API base URL</label><input className="form-control font-monospace mb-2" value={voiceToolApiBaseUrl} onChange={(event) => { const value = event.target.value.trim().replace(/\/+$/, ''); setVoiceToolApiBaseUrl(value); try { localStorage.setItem('carestack-voice-tool-api-base-url', value); } catch {} }} placeholder={API_URL} /><small className="d-block text-muted mb-2">The default uses the configured CareStack API URL. For local testing use <code>http://localhost:3001</code>; Exotel calls require the API service's public HTTPS URL.</small><label className="form-label">Clinic voice tool endpoint</label><input className="form-control font-monospace mb-2" readOnly value={`${voiceToolApiBaseUrl.replace(/\/+$/, '')}/api/voice/tools/${telephonyTenantId}`} onFocus={(event) => event.target.select()} />{/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(voiceToolApiBaseUrl) && <p className="alert alert-warning py-2">Exotel cloud cannot reach localhost. The local endpoint works for testing on this machine; calls from Exotel need a public HTTPS URL.</p>}<label className="form-label">Clinic tool secret</label><input className="form-control font-monospace" readOnly value={voiceToolSecret} onFocus={(event) => event.target.select()} /><div className="mt-3"><strong>Exotel console setup</strong><ol className="mb-2 mt-2"><li>In <b>Build Bot → Tool Integration</b>, create three active POST tools using the endpoint above and JSON request bodies below. Add header <code>x-voice-tool-secret</code> with the clinic secret.</li><li>Attach the tools to the clinic’s published Voicebot and map each value from the caller’s speech. Use ISO dates (<code>YYYY-MM-DD</code>) and 24-hour times (<code>HH:mm</code>).</li><li>In App Bazaar, connect <b>Greeting → IVR Menu</b>. Set “Press 1 for appointment booking” to the published booking Voicebot applet. Assign the saved app flow to this clinic’s ExoPhone.</li><li>Tell the bot to collect the patient’s name, callback number, doctor, date, time and reason; check availability; read all details back; get a clear yes; then call the booking tool. Read the confirmed booking ID back to the caller.</li></ol><details><summary>Tool request bodies</summary><p className="small mt-2 mb-1">Create a <code>carestack_clinic_info</code> tool with this body:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'clinic_info' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_check_availability</code> tool. Map date, time and doctor_name from the conversation:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'availability', date: 'YYYY-MM-DD', time: 'HH:mm', doctor_name: 'doctor name' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_book_appointment</code> tool. Map request_id to a unique ID per call, confirmed to true only after caller approval, and the remaining fields from the confirmed details:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'book', request_id: 'unique-call-id', confirmed: true, patient_name: 'patient name', phone_number: '+919876543210', doctor_name: 'doctor name', date: 'YYYY-MM-DD', time: 'HH:mm', reason: 'visit reason' }, null, 2)}</pre></details><p className="small mb-0"><b>Important:</b> Exotel must be able to reach this endpoint over public HTTPS. A localhost URL will not work from an Exotel call. A successful appointment appears immediately in this clinic’s CareStack appointments; booking hours, future dates, duplicate slots and caller confirmation are checked by the API.</p></div></div>}
                   <div className="table-responsive mb-4"><table className="table align-middle">
                     <thead><tr><th>Clinic</th><th>Portal</th><th>Administrator</th><th>Plan</th><th>AI phone</th><th>Subscription</th><th className="text-end">Actions</th></tr></thead>
                     <tbody>{tenants.length ? tenants.map((tenant) => <tr key={tenant.id}>
                       <td><div className="fw-semibold">{tenant.name}</div><small className="text-muted">{tenant.region}</small></td>
-                      <td>{tenant.domain}.localhost</td>
+                      <td><a href={getTenantPortalUrl(tenant.domain)}>{getTenantPortalUrl(tenant.domain)}</a></td>
                       <td>{tenant.admin_email}</td>
                       <td className="text-capitalize">{tenant.plan}<small className="d-block text-muted">{tenant.billing_cycle}</small></td>
-                      <td><div>{tenant.telephony?.phone_number || 'Not assigned'}</div><small className="text-muted">{tenant.telephony?.voice_provider === 'exotel_voicebot' ? (tenant.telephony?.enabled ? 'Exotel Voicebot · live' : 'Exotel Voicebot · console setup') : tenant.telephony?.deployment_status === 'active' ? 'Sarvam inbound active' : 'Not deployed'}</small></td>
+                      <td><div>{telephonyTenantId === tenant.id ? (telephonyForm.phone_number || 'Not assigned') : (tenant.telephony?.phone_number || 'Not assigned')}</div><small className="text-muted">{telephonyTenantId === tenant.id ? `${telephonyForm.voice_provider === 'exotel_voicebot' ? 'Exotel Voicebot' : 'Sarvam'} · editing (unsaved)` : tenant.telephony?.voice_provider === 'exotel_voicebot' ? (tenant.telephony?.enabled ? 'Exotel Voicebot · live' : 'Exotel Voicebot · console setup') : tenant.telephony?.deployment_status === 'active' ? 'Sarvam inbound active' : 'Not deployed'}</small></td>
                       <td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status}</span></td>
                       <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => configureClinicTelephony(tenant)}>Configure calling</button><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editTenant(tenant)}>Edit</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'} me-2`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeTenant(tenant)}>Delete</button></td>
                     </tr>) : <tr><td colSpan="6" className="text-muted">No tenants yet.</td></tr>}</tbody>
                   </table></div>
                   {telephonyTenantId && <div id="clinic-telephony-form" className="border rounded-4 p-3 p-md-4 mb-4 bg-light">
-                    <div className="d-flex justify-content-between align-items-start gap-3"><div><h4 className="mb-1">Calling setup · {tenants.find((tenant) => tenant.id === telephonyTenantId)?.name}</h4><p className="text-muted">Exotel supplies this clinic’s phone number and calling connection. API credentials are encrypted before they are saved and are never sent back to this form.</p></div><span className={`status-pill ${tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'confirmed' : 'cancelled'}`}>{tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Exotel credentials saved' : 'Exotel credentials needed'}</span></div>
+                    <div className="d-flex justify-content-between align-items-start gap-3"><div><h4 className="mb-1">Calling setup · {tenants.find((tenant) => tenant.id === telephonyTenantId)?.name}</h4><p className="text-muted">Each voice provider keeps its own Exophone, account, and routing settings. Exotel API credentials are encrypted and never sent back to this form.</p></div><span className={`status-pill ${tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'confirmed' : 'cancelled'}`}>{tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Exotel credentials saved' : 'Exotel credentials needed'}</span></div>
                     <form onSubmit={saveClinicTelephony}><div className="row g-3">
-                      <div className="col-md-6"><label className="form-label">AI voice provider</label><select className="form-select" value={telephonyForm.voice_provider || 'sarvam'} onChange={(event) => { setTelephonyForm({ ...telephonyForm, voice_provider: event.target.value }); setExotelConnectionStatus(''); }}><option value="sarvam">Sarvam Voice Agents</option><option value="exotel_voicebot">Exotel Voicebot</option></select><small className="text-muted">Choose one voice engine per clinic. Exotel phone routing stays the telephony layer.</small></div>
-                      <div className="col-md-6"><label className="form-label">Clinic Exophone number</label><input className="form-control" type="tel" placeholder="+919876543210" value={telephonyForm.phone_number || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, phone_number: event.target.value })} /><small className="text-muted">Unique across clinics; use international format.</small></div>
-                      <div className="col-md-6"><label className="form-label">Exotel Account SID</label><input className="form-control" value={telephonyForm.account_sid || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, account_sid: event.target.value })} /><small className="text-muted">Use the Account SID shown with the CPaaS API credentials in Exotel Dashboard → Settings → API Settings.</small></div>
-                      <div className="col-md-6"><label className="form-label">Exotel CPaaS API Key</label><input className="form-control" type="password" autoComplete="new-password" value={telephonyForm.exotel_api_key || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, exotel_api_key: event.target.value })} placeholder={tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Saved — enter a new key to replace it' : 'Enter CPaaS API Key'} /><small className="text-muted">Use the CPaaS API Key, not a Voicebot key. Leave blank to keep the saved value.</small></div>
-                      <div className="col-md-6"><label className="form-label">Exotel CPaaS API Token / Secret</label><input className="form-control" type="password" autoComplete="new-password" value={telephonyForm.exotel_api_token || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, exotel_api_token: event.target.value })} placeholder={tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Saved — enter a new token to replace it' : 'Enter CPaaS API Token'} /><small className="text-muted">Use the CPaaS API Token paired with that key. Stored encrypted on the server.</small></div>
-                      <div className="col-md-6"><label className="form-label">Exotel App / Flow ID</label><input className="form-control" value={telephonyForm.app_id || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, app_id: event.target.value })} /><small className="text-muted">Assign the matching inbound flow to this clinic’s Exophone.</small></div>
-                      <div className="col-md-6"><label className="form-label">Exotel region</label><select className="form-select" value={telephonyForm.region || 'mumbai'} onChange={(event) => setTelephonyForm({ ...telephonyForm, region: event.target.value })}><option value="mumbai">India · Mumbai</option><option value="singapore">Singapore</option></select></div>
+                      <div className="col-md-6"><label className="form-label">AI voice provider</label><select className="form-select" value={telephonyForm.voice_provider || 'sarvam'} onChange={(event) => { selectTelephonyProvider(event.target.value); setExotelConnectionStatus(''); }}><option value="sarvam">Sarvam Voice Agents</option><option value="exotel_voicebot">Exotel Voicebot</option></select><small className="text-muted">Choose one voice engine per clinic. Exotel phone routing stays the telephony layer.</small></div>
+                      <div className="col-md-6"><label className="form-label">Clinic Exophone number</label><input className="form-control" type="tel" placeholder="+919876543210" value={telephonyForm.phone_number || ''} onChange={(event) => updateTelephonyField('phone_number', event.target.value)} /><small className="text-muted">Unique across clinics; use international format.</small></div>
+                      <div className="col-md-6"><label className="form-label">Exotel Account SID</label><input className="form-control" value={telephonyForm.account_sid || ''} onChange={(event) => updateTelephonyField('account_sid', event.target.value)} /><small className="text-muted">Use the Account SID shown with the CPaaS API credentials in Exotel Dashboard → Settings → API Settings.</small></div>
+                      <div className="col-md-6"><label className="form-label">Exotel region</label><select className="form-select" value={telephonyForm.region || 'mumbai'} onChange={(event) => updateTelephonyField('region', event.target.value)}><option value="mumbai">India · Mumbai</option><option value="singapore">Singapore</option></select></div>
                       {telephonyForm.voice_provider === 'exotel_voicebot' ? <>
                         <div className="col-12"><h5 className="mt-2 mb-0">Exotel Voicebot</h5><p className="small text-muted mb-0">Legacy managed voicebot option. CareStack’s own agent runtime is the provider-neutral path.</p></div>
-                        <div className="col-md-6"><label className="form-label">Exotel Voicebot ID</label><input className="form-control" value={telephonyForm.exotel_voicebot_id || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, exotel_voicebot_id: event.target.value })} /><small className="text-muted">Reference from the Exotel Voicebot console.</small></div><div className="col-12"><label className="d-flex align-items-center gap-2"><input type="checkbox" className="form-check-input mt-0" checked={Boolean(telephonyForm.enabled)} onChange={(event) => setTelephonyForm({ ...telephonyForm, enabled: event.target.checked })} /><span><strong>Exotel inbound flow is assigned and tested</strong><small className="d-block text-muted">Enable the clinic’s live status after assigning this flow to its ExoPhone and completing a test call.</small></span></label></div>
+                        <div className="col-md-6"><label className="form-label">Exotel CPaaS API Key</label><input className="form-control" type="password" autoComplete="new-password" value={telephonyForm.exotel_api_key || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, exotel_api_key: event.target.value })} placeholder={tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Saved — enter a new key to replace it' : 'Enter CPaaS API Key'} /><small className="text-muted">Use the CPaaS API Key, not a Voicebot key. Leave blank to keep the saved value.</small></div>
+                        <div className="col-md-6"><label className="form-label">Exotel CPaaS API Token / Secret</label><input className="form-control" type="password" autoComplete="new-password" value={telephonyForm.exotel_api_token || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, exotel_api_token: event.target.value })} placeholder={tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Saved — enter a new token to replace it' : 'Enter CPaaS API Token'} /><small className="text-muted">Use the CPaaS API Token paired with that key. Stored encrypted on the server.</small></div>
+                        <div className="col-md-6"><label className="form-label">Exotel App / Flow ID</label><input className="form-control" value={telephonyForm.app_id || ''} onChange={(event) => updateTelephonyField('app_id', event.target.value)} /><small className="text-muted">Assign the matching inbound flow to this clinic’s Exophone.</small></div>
+                        <div className="col-md-6"><label className="form-label">Exotel Voicebot ID</label><input className="form-control" value={telephonyForm.exotel_voicebot_id || ''} onChange={(event) => updateTelephonyField('exotel_voicebot_id', event.target.value)} /><small className="text-muted">Reference from the Exotel Voicebot console.</small></div><div className="col-12"><label className="d-flex align-items-center gap-2"><input type="checkbox" className="form-check-input mt-0" checked={Boolean(telephonyForm.enabled)} onChange={(event) => updateTelephonyField('enabled', event.target.checked)} /><span><strong>Exotel inbound flow is assigned and tested</strong><small className="d-block text-muted">Enable the clinic’s live status after assigning this flow to its ExoPhone and completing a test call.</small></span></label></div>
                         {exotelConnectionStatus && <div className="col-md-6 align-self-end"><span className={`status-pill ${exotelConnectionStatus === 'Connected' ? 'confirmed' : 'cancelled'}`}>{exotelConnectionStatus}</span></div>}
                       </> : <>
                       <div className="col-12"><h5 className="mt-2 mb-0">Sarvam inbound agent</h5></div>
-                      <div className="col-md-6"><label className="form-label">Organization ID</label><input className="form-control" value={telephonyForm.sarvam_org_id || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, sarvam_org_id: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label">Workspace ID</label><input className="form-control" value={telephonyForm.sarvam_workspace_id || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, sarvam_workspace_id: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label">Agent / app ID</label><input className="form-control" value={telephonyForm.sarvam_agent_id || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, sarvam_agent_id: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label">Agent version</label><input className="form-control" type="number" min="1" value={telephonyForm.sarvam_agent_version || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, sarvam_agent_version: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label">Sarvam Exotel connection ID</label><input className="form-control" value={telephonyForm.sarvam_connection_id || ''} onChange={(event) => setTelephonyForm({ ...telephonyForm, sarvam_connection_id: event.target.value })} /></div>
+                      <div className="col-md-6"><label className="form-label">Organization ID</label><input className="form-control" value={telephonyForm.sarvam_org_id || ''} onChange={(event) => updateTelephonyField('sarvam_org_id', event.target.value)} /></div>
+                      <div className="col-md-6"><label className="form-label">Workspace ID</label><input className="form-control" value={telephonyForm.sarvam_workspace_id || ''} onChange={(event) => updateTelephonyField('sarvam_workspace_id', event.target.value)} /></div>
+                      <div className="col-md-6"><label className="form-label">Agent / app ID</label><input className="form-control" value={telephonyForm.sarvam_agent_id || ''} onChange={(event) => updateTelephonyField('sarvam_agent_id', event.target.value)} /></div>
+                      <div className="col-md-6"><label className="form-label">Agent version</label><input className="form-control" type="number" min="1" value={telephonyForm.sarvam_agent_version || ''} onChange={(event) => updateTelephonyField('sarvam_agent_version', event.target.value)} /></div>
+                      <div className="col-md-6"><label className="form-label">Sarvam Exotel connection ID</label><input className="form-control" value={telephonyForm.sarvam_connection_id || ''} onChange={(event) => updateTelephonyField('sarvam_connection_id', event.target.value)} /></div>
                       </>}
                     </div><p className="alert alert-info mt-3 mb-0">Exotel credentials and phone routing are saved separately from the AI agent configuration. Use Verify Exotel account to check the saved Account SID and credentials. Provider-specific activation is available for the existing managed agent options.</p><div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save calling settings'}</button><button type="button" className="btn btn-outline-secondary" onClick={() => setTelephonyTenantId(null)}>Cancel</button><button type="button" className="btn btn-outline-success ms-auto" disabled={busy || !tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured || !telephonyForm.account_sid} onClick={() => verifyExotelForClinic(telephonyTenantId)}>Verify Exotel account</button>{telephonyForm.voice_provider !== 'exotel_voicebot' && <button type="button" className="btn btn-success" disabled={busy || !tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.credentials_configured || tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.deployment_status === 'active'} onClick={() => activateClinicVoice(telephonyTenantId)}>Activate inbound calls</button>}</div></form>
                   </div>}
@@ -1108,7 +1148,7 @@ function App() {
                   <form onSubmit={handleTenantSubmit}>
                     <div className="row g-3">
                       <div className="col-md-6"><label className="form-label" htmlFor="tenant-name">Clinic name</label><input id="tenant-name" className="form-control" required minLength="2" value={tenantForm.tenant_name} onChange={(event) => setTenantForm({ ...tenantForm, tenant_name: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label" htmlFor="tenant-domain">Subdomain</label><div className="input-group"><input id="tenant-domain" className="form-control" pattern="[a-z0-9]+(-[a-z0-9]+)*" required minLength="2" value={tenantForm.tenant_domain} onChange={(event) => setTenantForm({ ...tenantForm, tenant_domain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /><span className="input-group-text">.localhost</span></div></div>
+                      <div className="col-md-6"><label className="form-label" htmlFor="tenant-domain">Tenant slug</label><div className="input-group"><input id="tenant-domain" className="form-control" pattern="[a-z0-9]+(-[a-z0-9]+)*" required minLength="2" value={tenantForm.tenant_domain} onChange={(event) => setTenantForm({ ...tenantForm, tenant_domain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /><span className="input-group-text">workspace</span></div><small className="text-muted">Clinics use the shared CareStack URL with this tenant slug.</small></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-name">Admin name</label><input id="admin-name" className="form-control" required value={tenantForm.admin_name} onChange={(event) => setTenantForm({ ...tenantForm, admin_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>

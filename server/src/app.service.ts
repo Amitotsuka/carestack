@@ -66,6 +66,7 @@ type Tenant = {
   telephony?: {
     provider: 'exotel'; voice_provider?: 'sarvam' | 'exotel_voicebot'; exotel_voicebot_id?: string;
     phone_number: string; account_sid: string; app_id: string; region: 'mumbai' | 'singapore'; enabled: boolean;
+    provider_configs?: Record<string, { phone_number?: string; account_sid?: string; app_id?: string; region?: 'mumbai' | 'singapore'; enabled?: boolean; exotel_voicebot_id?: string; sarvam_org_id?: string; sarvam_workspace_id?: string; sarvam_agent_id?: string; sarvam_agent_version?: number; sarvam_connection_id?: string }>;
     exotel_api_key_encrypted?: string; exotel_api_token_encrypted?: string;
     sarvam_org_id?: string; sarvam_workspace_id?: string; sarvam_agent_id?: string; sarvam_agent_version?: number;
     sarvam_connection_id?: string; sarvam_deployment_id?: string;
@@ -80,8 +81,10 @@ const defaultTelephony = { provider: 'exotel' as const, voice_provider: 'sarvam'
 export class AppService {
   private tenants: Record<string, Tenant> = {};
   private clinicInterests: ClinicInterest[] = [];
-  private readonly superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'superadmin@hospital.ai').trim().toLowerCase();
-  private readonly superAdminPasswordHash = bcrypt.hashSync(process.env.SUPER_ADMIN_PASSWORD || 'admin123', 12);
+  private readonly superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'superadmin@hospital.ai')).trim().toLowerCase();
+  private readonly superAdminPasswordHash = process.env.SUPER_ADMIN_PASSWORD
+    ? bcrypt.hashSync(process.env.SUPER_ADMIN_PASSWORD, 12)
+    : process.env.NODE_ENV === 'production' ? '' : bcrypt.hashSync('admin123', 12);
   private planCatalog: Plan[] = [
     { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3 },
     { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
@@ -90,7 +93,10 @@ export class AppService {
   private readonly database: Database.Database;
 
   constructor() {
-    const databasePath = process.env.DATABASE_PATH || path.resolve(__dirname, '..', 'data', 'hospital.sqlite');
+    const defaultDatabasePath = process.env.NODE_ENV === 'production'
+      ? '/var/data/hospital.sqlite'
+      : path.resolve(__dirname, '..', 'data', 'hospital.sqlite');
+    const databasePath = process.env.DATABASE_PATH || defaultDatabasePath;
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
     this.database = new Database(databasePath);
     this.database.pragma('journal_mode = WAL');
@@ -213,7 +219,7 @@ export class AppService {
   }
 
   async login(email: string, password: string) {
-    if (email === this.superAdminEmail && await bcrypt.compare(password, this.superAdminPasswordHash)) {
+    if (this.superAdminEmail && this.superAdminPasswordHash && email === this.superAdminEmail && await bcrypt.compare(password, this.superAdminPasswordHash)) {
       return {
         user_id: 'super-admin',
         role: 'super_admin',
@@ -559,48 +565,75 @@ export class AppService {
   updateTenantTelephony(tenantId: string, payload: any) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return null;
-    const phoneNumber = String(payload.phone_number || '').trim().replace(/[\s()-]/g, '');
-    const accountSid = String(payload.account_sid || '').trim();
-    const appId = String(payload.app_id || '').trim();
-    const region = payload.region === 'singapore' ? 'singapore' : 'mumbai';
     const voiceProvider = payload.voice_provider === 'exotel_voicebot' ? 'exotel_voicebot' : payload.voice_provider === 'sarvam' || !payload.voice_provider ? 'sarvam' : null;
-    if (!voiceProvider) return false;
-    const exotelVoicebotId = String(payload.exotel_voicebot_id || '').trim();
+    if (!voiceProvider) return { error: 'Choose a supported AI voice provider.' };
     const existing = tenant.telephony;
+    const configFields = ['phone_number', 'account_sid', 'app_id', 'region', 'enabled', 'exotel_voicebot_id', 'sarvam_org_id', 'sarvam_workspace_id', 'sarvam_agent_id', 'sarvam_agent_version', 'sarvam_connection_id'];
+    const sanitizeProviderConfig = (value: any) => Object.fromEntries(configFields.filter((field) => Object.prototype.hasOwnProperty.call(value || {}, field)).map((field) => [field, value[field]]));
+    const providerConfigs = Object.fromEntries(Object.entries(existing?.provider_configs || {}).map(([name, value]) => [name, sanitizeProviderConfig(value)]));
+    const legacyProvider = existing?.voice_provider || 'sarvam';
+    if (existing && !providerConfigs[legacyProvider]) providerConfigs[legacyProvider] = {
+      phone_number: existing.phone_number, account_sid: existing.account_sid, app_id: existing.app_id,
+      region: existing.region, enabled: existing.enabled, exotel_voicebot_id: existing.exotel_voicebot_id,
+      sarvam_org_id: existing.sarvam_org_id, sarvam_workspace_id: existing.sarvam_workspace_id,
+      sarvam_agent_id: existing.sarvam_agent_id, sarvam_agent_version: existing.sarvam_agent_version,
+      sarvam_connection_id: existing.sarvam_connection_id,
+    };
+    if (payload.provider_configs && typeof payload.provider_configs === 'object') {
+      for (const name of ['sarvam', 'exotel_voicebot']) {
+        if (payload.provider_configs[name] && typeof payload.provider_configs[name] === 'object') {
+          providerConfigs[name] = { ...(providerConfigs[name] || {}), ...sanitizeProviderConfig(payload.provider_configs[name]) };
+        }
+      }
+    }
+    const incoming = payload.provider_config && typeof payload.provider_config === 'object' ? payload.provider_config : payload;
+    const selectedFields = Object.fromEntries(configFields.filter((field) => Object.prototype.hasOwnProperty.call(incoming, field)).map((field) => [field, incoming[field]]));
+    const selected: Record<string, any> = { ...(providerConfigs[voiceProvider] || {}), ...selectedFields };
+    const phoneNumber = String(selected.phone_number || '').trim().replace(/[\s()-]/g, '');
+    const accountSid = String(selected.account_sid || '').trim();
+    const appId = String(selected.app_id || '').trim();
+    const region = selected.region === 'singapore' ? 'singapore' : 'mumbai';
+    const exotelVoicebotId = String(selected.exotel_voicebot_id || '').trim();
     const apiKey = String(payload.exotel_api_key || '').trim();
     const apiToken = String(payload.exotel_api_token || '').trim();
-    if (apiKey.length > 512 || apiToken.length > 512) return false;
-    if (existing?.sarvam_deployment_id && (
-      voiceProvider !== 'sarvam' ||
-      existing.phone_number !== phoneNumber || existing.account_sid !== accountSid || existing.app_id !== appId || existing.region !== region ||
-      existing.sarvam_org_id !== String(payload.sarvam_org_id || '').trim() || existing.sarvam_workspace_id !== String(payload.sarvam_workspace_id || '').trim() ||
-      existing.sarvam_agent_id !== String(payload.sarvam_agent_id || '').trim() || existing.sarvam_agent_version !== (Number(payload.sarvam_agent_version) || undefined) ||
-      existing.sarvam_connection_id !== String(payload.sarvam_connection_id || '').trim()
-    )) return false;
-    if (phoneNumber && !/^\+[1-9]\d{7,14}$/.test(phoneNumber)) return false;
-    if (phoneNumber && Object.values(this.tenants).some((item) => item.id !== tenantId &&
-      (item.telephony?.phone_number || '').replace(/[\s()-]/g, '') === phoneNumber)) return false;
-    let enabled = tenant.telephony?.enabled || false;
-    if (payload.enabled === false) enabled = false;
-    if (payload.enabled === true) {
+    if (apiKey.length > 512 || apiToken.length > 512) return { error: 'Exotel API key and token must be 512 characters or fewer.' };
+    if (voiceProvider === 'sarvam' && existing?.sarvam_deployment_id) {
+      const deployedSarvam = existing.provider_configs?.sarvam;
+      if (deployedSarvam && (
+        deployedSarvam.phone_number !== phoneNumber || deployedSarvam.account_sid !== accountSid || deployedSarvam.app_id !== appId || deployedSarvam.region !== region ||
+        deployedSarvam.sarvam_org_id !== String(selected.sarvam_org_id || '').trim() || deployedSarvam.sarvam_workspace_id !== String(selected.sarvam_workspace_id || '').trim() ||
+        deployedSarvam.sarvam_agent_id !== String(selected.sarvam_agent_id || '').trim() || deployedSarvam.sarvam_agent_version !== (Number(selected.sarvam_agent_version) || undefined) ||
+        deployedSarvam.sarvam_connection_id !== String(selected.sarvam_connection_id || '').trim()
+      )) return { error: 'This Sarvam deployment is already active. Stop the deployment in Sarvam before changing its phone, connection, or agent settings.' };
+    }
+    if (!phoneNumber || !/^\+[1-9]\d{7,14}$/.test(phoneNumber)) return { error: 'Enter the clinic Exophone in international E.164 format, for example +919876543210.' };
+    if (Object.values(this.tenants).some((item) => item.id !== tenantId &&
+      Object.values(item.telephony?.provider_configs || { [item.telephony?.voice_provider || 'sarvam']: item.telephony }).some((config: any) => (config?.phone_number || '').replace(/[\s()-]/g, '') === phoneNumber))) {
+      return { error: 'This phone number is already assigned to another clinic. Each clinic must have its own unique Exophone.' };
+    }
+    let enabled = Boolean(selected.enabled);
+    if (selected.enabled === false) enabled = false;
+    if (selected.enabled === true) {
       if (voiceProvider === 'exotel_voicebot') {
-        if (!phoneNumber || !accountSid || !appId || !exotelVoicebotId) return false;
+        if (!accountSid || !appId || !exotelVoicebotId) return { error: 'For Exotel Voicebot, enter the Account SID, App / Flow ID, and Voicebot ID before enabling inbound calls.' };
         enabled = true;
       } else {
-        if (!tenant.telephony?.sarvam_deployment_id) return false;
+        if (!existing?.sarvam_deployment_id) return { error: 'Sarvam inbound calls cannot be enabled until the Sarvam deployment is active. Save the settings, then use Activate inbound calls.' };
         enabled = true;
       }
     }
+    const savedSelected: Record<string, any> = { ...selected, phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled, exotel_voicebot_id: exotelVoicebotId };
+    providerConfigs[voiceProvider] = savedSelected;
     tenant.telephony = {
       provider: 'exotel', voice_provider: voiceProvider, exotel_voicebot_id: exotelVoicebotId,
-      phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled,
+      phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled, provider_configs: providerConfigs,
       exotel_api_key_encrypted: apiKey ? this.encryptCredential(apiKey) : existing?.exotel_api_key_encrypted,
       exotel_api_token_encrypted: apiToken ? this.encryptCredential(apiToken) : existing?.exotel_api_token_encrypted,
-      sarvam_org_id: String(payload.sarvam_org_id || '').trim(),
-      sarvam_workspace_id: String(payload.sarvam_workspace_id || '').trim(),
-      sarvam_agent_id: String(payload.sarvam_agent_id || '').trim(),
-      sarvam_agent_version: Number(payload.sarvam_agent_version) || undefined,
-      sarvam_connection_id: String(payload.sarvam_connection_id || '').trim(),
+      sarvam_org_id: String(savedSelected.sarvam_org_id || '').trim(),
+      sarvam_workspace_id: String(savedSelected.sarvam_workspace_id || '').trim(),
+      sarvam_agent_id: String(savedSelected.sarvam_agent_id || '').trim(),
+      sarvam_agent_version: Number(savedSelected.sarvam_agent_version) || undefined,
+      sarvam_connection_id: String(savedSelected.sarvam_connection_id || '').trim(),
       sarvam_deployment_id: tenant.telephony?.sarvam_deployment_id,
     };
     this.persistState();
@@ -616,6 +649,12 @@ export class AppService {
     );
     return {
       ...publicConfig,
+      provider_configs: config.provider_configs || { [voiceProvider]: {
+        phone_number: config.phone_number, account_sid: config.account_sid, app_id: config.app_id, region: config.region,
+        enabled: config.enabled, exotel_voicebot_id: config.exotel_voicebot_id,
+        sarvam_org_id: config.sarvam_org_id, sarvam_workspace_id: config.sarvam_workspace_id,
+        sarvam_agent_id: config.sarvam_agent_id, sarvam_agent_version: config.sarvam_agent_version, sarvam_connection_id: config.sarvam_connection_id,
+      } },
       voice_provider: voiceProvider,
       enabled: Boolean(config.enabled),
       exotel_credentials_configured: exotelCredentialsConfigured,
@@ -626,8 +665,8 @@ export class AppService {
       credentials_configured: voiceProvider === 'exotel_voicebot'
         ? Boolean(process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN && (process.env.VOICE_TOOL_SECRET || '').length >= 32)
         : Boolean(process.env.SARVAM_API_KEY && (process.env.VOICE_TOOL_SECRET || '').length >= 32),
-      deployment_status: config.sarvam_deployment_id ? 'active' : voiceProvider === 'exotel_voicebot'
-        ? (config.enabled && config.exotel_voicebot_id && config.app_id ? 'active' : config.exotel_voicebot_id ? 'exotel_console_setup' : 'exotel_bot_required') : 'not_deployed',
+      deployment_status: voiceProvider === 'sarvam' ? (config.sarvam_deployment_id ? 'active' : 'not_deployed') :
+        (config.enabled && config.exotel_voicebot_id && config.app_id ? 'active' : config.exotel_voicebot_id ? 'exotel_console_setup' : 'exotel_bot_required'),
     };
   }
 
@@ -736,6 +775,7 @@ export class AppService {
       if (!response.ok || !result.deployment_id) return { error: `Sarvam deployment failed (${response.status}). Check the Sarvam agent, Exotel connection, and phone number configuration.` };
       config.sarvam_deployment_id = result.deployment_id;
       config.enabled = true;
+      config.provider_configs = { ...(config.provider_configs || {}), sarvam: { ...(config.provider_configs?.sarvam || {}), enabled: true } };
       this.persistState();
       return { deployment_id: result.deployment_id, telephony: this.publicTelephony(config) };
     } catch {
