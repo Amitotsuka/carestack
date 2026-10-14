@@ -1,6 +1,6 @@
 import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, NotFoundException, Param, Patch, Post, Put, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min, MinLength } from 'class-validator';
+import { IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min, MinLength } from 'class-validator';
 import { AppService } from './app.service';
 import { AccessGuard } from './auth/access.guard';
 import { Roles, TenantScoped } from './auth/access.decorator';
@@ -53,6 +53,9 @@ class TenantOnboardDto {
   @IsString()
   region: string;
 
+  @IsOptional() @IsString() @MinLength(10) @IsByteLength(10, 72)
+  admin_password?: string;
+
   @IsOptional()
   @IsIn(['monthly', 'annual'])
   billing_cycle?: string;
@@ -77,6 +80,11 @@ class TenantUpdateDto {
   subscription_status?: string;
   @IsOptional() @IsString()
   region?: string;
+}
+
+class TenantPasswordDto {
+  @IsString() @MinLength(10) @IsByteLength(10, 72)
+  password: string;
 }
 
 class SubscriptionUpdateDto {
@@ -260,6 +268,16 @@ export class AppController {
       }
       throw error;
     }
+  }
+
+  @Put('api/tenants/:tenantId/password')
+  @UseGuards(AccessGuard)
+  @Roles('super_admin')
+  async setTenantAdminPassword(@Param('tenantId') tenantId: string, @Body() body: TenantPasswordDto) {
+    const result = await this.appService.setTenantAdminPassword(tenantId, body.password);
+    if (result === 'not_found') throw new NotFoundException('Tenant not found');
+    if (result === 'admin_not_found') throw new ConflictException('This tenant has no administrator account');
+    return { updated: true, message: 'Tenant administrator password updated successfully.' };
   }
 
   @Put('api/tenants/:tenantId/telephony')

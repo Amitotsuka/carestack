@@ -133,6 +133,11 @@ function App() {
   const [plans, setPlans] = useState([]);
   const [adminDashboard, setAdminDashboard] = useState(null);
   const [editingTenantId, setEditingTenantId] = useState(null);
+  const [passwordTenantId, setPasswordTenantId] = useState(null);
+  const [tenantPassword, setTenantPassword] = useState('');
+  const [tenantPasswordConfirm, setTenantPasswordConfirm] = useState('');
+  const [initialTenantPassword, setInitialTenantPassword] = useState('');
+  const [initialTenantPasswordConfirm, setInitialTenantPasswordConfirm] = useState('');
   const [planForm, setPlanForm] = useState(emptyPlan);
   const [editingPlanId, setEditingPlanId] = useState(null);
   const [patientForm, setPatientForm] = useState(emptyPatient);
@@ -463,18 +468,26 @@ function App() {
 
   const handleTenantSubmit = async (event) => {
     event.preventDefault();
+    if (!editingTenantId && initialTenantPassword !== initialTenantPasswordConfirm) {
+      setError('The administrator passwords do not match.');
+      return;
+    }
     setBusy(true);
     setNotice('');
     setError('');
     try {
       const data = await request(editingTenantId ? `/api/tenants/${editingTenantId}` : '/api/tenants/onboard', {
         method: editingTenantId ? 'PUT' : 'POST',
-        body: JSON.stringify(tenantForm),
+        body: JSON.stringify(editingTenantId ? tenantForm : { ...tenantForm, admin_password: initialTenantPassword }),
       });
       setNotice(editingTenantId
         ? `${data.tenant.name} was updated.`
-        : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. One-time password: ${data.tenant.temporary_password}.`);
+        : data.tenant.password_set
+          ? `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. The administrator password you set is active; share it securely.`
+          : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. One-time password: ${data.tenant.temporary_password}.`);
       setTenantForm(emptyTenant);
+      setInitialTenantPassword('');
+      setInitialTenantPasswordConfirm('');
       setEditingTenantId(null);
       await loadAdminData();
     } catch (submitError) {
@@ -486,6 +499,8 @@ function App() {
 
   const editTenant = (tenant) => {
     setEditingTenantId(tenant.id);
+    setInitialTenantPassword('');
+    setInitialTenantPasswordConfirm('');
     setTenantForm({
       tenant_name: tenant.name,
       tenant_domain: tenant.domain,
@@ -500,6 +515,41 @@ function App() {
     setNotice('');
     setError('');
     document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const openTenantPasswordForm = (tenant) => {
+    setPasswordTenantId(tenant.id);
+    setTenantPassword('');
+    setTenantPasswordConfirm('');
+    setError('');
+    setNotice('');
+    window.setTimeout(() => document.getElementById('tenant-password-form')?.scrollIntoView({ behavior: 'smooth' }), 0);
+  };
+
+  const handleTenantPasswordSubmit = async (event) => {
+    event.preventDefault();
+    setError('');
+    setNotice('');
+    if (tenantPassword !== tenantPasswordConfirm) {
+      setError('The passwords do not match.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await request(`/api/tenants/${passwordTenantId}/password`, {
+        method: 'PUT',
+        body: JSON.stringify({ password: tenantPassword }),
+      });
+      const tenant = tenants.find((item) => item.id === passwordTenantId);
+      setNotice(`${tenant?.name || 'Tenant'} administrator password was updated. Share the new password with the administrator securely.`);
+      setPasswordTenantId(null);
+      setTenantPassword('');
+      setTenantPasswordConfirm('');
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const updateSubscription = async (tenantId, changes) => {
@@ -1116,9 +1166,20 @@ function App() {
                       <td className="text-capitalize">{tenant.plan}<small className="d-block text-muted">{tenant.billing_cycle}</small></td>
                       <td><div>{telephonyTenantId === tenant.id ? (telephonyForm.phone_number || 'Not assigned') : (tenant.telephony?.phone_number || 'Not assigned')}</div><small className="text-muted">{telephonyTenantId === tenant.id ? `${telephonyForm.voice_provider === 'exotel_voicebot' ? 'Exotel Voicebot' : 'Sarvam'} · editing (unsaved)` : tenant.telephony?.voice_provider === 'exotel_voicebot' ? (tenant.telephony?.enabled ? 'Exotel Voicebot · live' : 'Exotel Voicebot · console setup') : tenant.telephony?.deployment_status === 'active' ? 'Sarvam inbound active' : 'Not deployed'}</small></td>
                       <td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status}</span></td>
-                      <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => configureClinicTelephony(tenant)}>Configure calling</button><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editTenant(tenant)}>Edit</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'} me-2`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeTenant(tenant)}>Delete</button></td>
+                      <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => configureClinicTelephony(tenant)}>Configure calling</button><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editTenant(tenant)}>Edit</button><button className="btn btn-sm btn-outline-secondary me-2" onClick={() => openTenantPasswordForm(tenant)}>Set password</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'} me-2`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeTenant(tenant)}>Delete</button></td>
                     </tr>) : <tr><td colSpan="6" className="text-muted">No tenants yet.</td></tr>}</tbody>
                   </table></div>
+                  {passwordTenantId && <div id="tenant-password-form" className="border rounded-4 p-3 p-md-4 mb-4 bg-light">
+                    <h4 className="mb-1">Set administrator password</h4>
+                    <p className="text-muted">{tenants.find((tenant) => tenant.id === passwordTenantId)?.admin_email}. The password is stored as a secure hash in the application database and is not returned by the server.</p>
+                    <form onSubmit={handleTenantPasswordSubmit}>
+                      <div className="row g-3">
+                        <div className="col-md-6"><label className="form-label" htmlFor="tenant-new-password">New password</label><input id="tenant-new-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={tenantPassword} onChange={(event) => setTenantPassword(event.target.value)} /><small className="text-muted">10–72 characters; password length is limited by bcrypt.</small></div>
+                        <div className="col-md-6"><label className="form-label" htmlFor="tenant-confirm-password">Confirm password</label><input id="tenant-confirm-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={tenantPasswordConfirm} onChange={(event) => setTenantPasswordConfirm(event.target.value)} /></div>
+                      </div>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save password'}</button><button type="button" className="btn btn-outline-secondary" onClick={() => { setPasswordTenantId(null); setTenantPassword(''); setTenantPasswordConfirm(''); }}>Cancel</button></div>
+                    </form>
+                  </div>}
                   {telephonyTenantId && <div id="clinic-telephony-form" className="border rounded-4 p-3 p-md-4 mb-4 bg-light">
                     <div className="d-flex justify-content-between align-items-start gap-3"><div><h4 className="mb-1">Calling setup · {tenants.find((tenant) => tenant.id === telephonyTenantId)?.name}</h4><p className="text-muted">Each voice provider keeps its own Exophone, account, and routing settings. Exotel API credentials are encrypted and never sent back to this form.</p></div><span className={`status-pill ${tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'confirmed' : 'cancelled'}`}>{tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured ? 'Exotel credentials saved' : 'Exotel credentials needed'}</span></div>
                     <form onSubmit={saveClinicTelephony}><div className="row g-3">
@@ -1152,12 +1213,13 @@ function App() {
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-name">Admin name</label><input id="admin-name" className="form-control" required value={tenantForm.admin_name} onChange={(event) => setTenantForm({ ...tenantForm, admin_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>
+                      {!editingTenantId && <><div className="col-md-6"><label className="form-label" htmlFor="new-tenant-password">Administrator password</label><input id="new-tenant-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={initialTenantPassword} onChange={(event) => setInitialTenantPassword(event.target.value)} /><small className="text-muted">10–72 characters; password length is limited by bcrypt.</small></div><div className="col-md-6"><label className="form-label" htmlFor="confirm-new-tenant-password">Confirm administrator password</label><input id="confirm-new-tenant-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={initialTenantPasswordConfirm} onChange={(event) => setInitialTenantPasswordConfirm(event.target.value)} /></div></>}
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-plan">Plan</label><select id="tenant-plan" className="form-select" value={tenantForm.plan} onChange={(event) => setTenantForm({ ...tenantForm, plan: event.target.value })}>{(plans.length ? plans : [{ id: 'starter', name: 'Starter' }, { id: 'growth', name: 'Growth' }, { id: 'enterprise', name: 'Enterprise' }]).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-cycle">Billing cycle</label><select id="tenant-cycle" className="form-select" value={tenantForm.billing_cycle} onChange={(event) => setTenantForm({ ...tenantForm, billing_cycle: event.target.value })}><option value="monthly">Monthly</option><option value="annual">Annual</option></select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-region">Region</label><input id="tenant-region" className="form-control" required value={tenantForm.region} onChange={(event) => setTenantForm({ ...tenantForm, region: event.target.value })} /></div>
                       {editingTenantId && <div className="col-md-3"><label className="form-label" htmlFor="tenant-status">Subscription status</label><select id="tenant-status" className="form-select" value={tenantForm.subscription_status} onChange={(event) => setTenantForm({ ...tenantForm, subscription_status: event.target.value })}><option value="active">Active</option><option value="paused">Paused</option></select></div>}
                     </div>
-                    <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? 'Save tenant' : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); }}>Cancel</button>}</div>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? 'Save tenant' : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setTenantForm(emptyTenant); setInitialTenantPassword(''); setInitialTenantPasswordConfirm(''); }}>Clear form</button>}</div>
                   </form>
                   </div>
                 </div>

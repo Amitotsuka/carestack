@@ -435,9 +435,12 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const adminId = `user-${tenantId}`;
     const requestedPlan = String(payload.plan || 'growth').toLowerCase();
     const plan = this.planCatalog.some((item) => item.id === requestedPlan) ? requestedPlan : 'growth';
-    const temporaryPassword = process.env.NODE_ENV === 'production'
-      ? randomBytes(18).toString('base64url')
-      : process.env.TENANT_DEFAULT_PASSWORD || 'admin123';
+    const adminPasswordWasProvided = typeof payload.admin_password === 'string' && payload.admin_password.length > 0;
+    const temporaryPassword = adminPasswordWasProvided
+      ? payload.admin_password
+      : process.env.NODE_ENV === 'production'
+        ? randomBytes(18).toString('base64url')
+        : process.env.TENANT_DEFAULT_PASSWORD || 'admin123';
     const tenant: Tenant = {
       id: tenantId,
       name: payload.tenant_name,
@@ -473,10 +476,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       tenant_name: tenant.name,
       domain: tenant.domain,
       admin_email: tenant.admin_email,
+      password_set: adminPasswordWasProvided,
       plan: tenant.plan,
       subscription_status: tenant.subscription_status,
       billing_cycle: tenant.billing_cycle,
-      temporary_password: temporaryPassword,
+      ...(adminPasswordWasProvided ? {} : { temporary_password: temporaryPassword }),
     };
   }
 
@@ -521,6 +525,21 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     this.updateAdminPrice(tenant);
     this.persistState();
     return this.listTenants().find((item) => item.id === tenantId);
+  }
+
+  async setTenantAdminPassword(tenantId: string, password: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return 'not_found' as const;
+
+    const adminUser = tenant.users.find((user) => user.email === tenant.admin_email)
+      || tenant.users.find((user) => user.role === 'tenant_admin');
+    if (!adminUser) return 'admin_not_found' as const;
+
+    adminUser.password_hash = bcrypt.hashSync(password, 12);
+    this.persistState();
+    // Wait for PostgreSQL persistence before reporting success to the super-admin.
+    await this.pendingPostgresWrite;
+    return 'updated' as const;
   }
 
   updateVoiceAgent(tenantId: string, payload: any) {
