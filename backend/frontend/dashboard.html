@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tenant Dashboard | CareStack</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="bg-soft">
+    <div class="container-fluid">
+      <div class="row min-vh-100">
+        <aside class="col-lg-2 bg-dark text-white px-3 py-4 sidebar">
+          <div class="d-flex align-items-center justify-content-between mb-4">
+            <div>
+              <div class="brand text-uppercase small text-secondary">CareStack</div>
+              <h4 class="mb-0">Tenant panel</h4>
+            </div>
+          </div>
+
+          <nav class="nav flex-column gap-2">
+            <a class="nav-link active" href="#">Overview</a>
+            <a class="nav-link" href="#">Patients</a>
+            <a class="nav-link" href="#">Appointments</a>
+            <a class="nav-link" href="#">Billing</a>
+            <a class="nav-link" href="#">Settings</a>
+          </nav>
+
+          <div class="mt-5 p-3 rounded-3 bg-secondary-subtle text-dark">
+            <small class="text-uppercase text-muted d-block mb-2">Tenant</small>
+            <strong id="tenantNameSidebar">Loading...</strong>
+          </div>
+
+          <button class="btn btn-outline-light w-100 mt-4" id="logoutBtn">Log out</button>
+        </aside>
+
+        <main class="col-lg-10 p-4">
+          <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+            <div>
+              <p class="text-uppercase text-primary small fw-bold mb-1">Dashboard</p>
+              <h2 class="mb-0 fw-bold" id="tenantHeading">Loading...</h2>
+            </div>
+            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#patientModal">+ Add patient</button>
+          </div>
+
+          <div class="row g-4 mb-4">
+            <div class="col-md-3 col-sm-6">
+              <div class="card shadow-sm border-0 rounded-4 h-100">
+                <div class="card-body">
+                  <p class="text-muted small mb-2">Patients</p>
+                  <h3 class="fw-bold mb-0" id="statPatients">0</h3>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3 col-sm-6">
+              <div class="card shadow-sm border-0 rounded-4 h-100">
+                <div class="card-body">
+                  <p class="text-muted small mb-2">Appointments</p>
+                  <h3 class="fw-bold mb-0" id="statAppointments">0</h3>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3 col-sm-6">
+              <div class="card shadow-sm border-0 rounded-4 h-100">
+                <div class="card-body">
+                  <p class="text-muted small mb-2">Revenue</p>
+                  <h3 class="fw-bold mb-0" id="statRevenue">₹0</h3>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3 col-sm-6">
+              <div class="card shadow-sm border-0 rounded-4 h-100">
+                <div class="card-body">
+                  <p class="text-muted small mb-2">Efficiency</p>
+                  <h3 class="fw-bold mb-0" id="statEfficiency">0%</h3>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                <h4 class="mb-0">Patients</h4>
+                <button class="btn btn-outline-primary btn-sm" id="refreshDashboard">Refresh</button>
+              </div>
+
+              <div class="table-responsive">
+                <table class="table align-middle">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Name</th>
+                      <th>Phone</th>
+                      <th>Email</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="patientTableBody">
+                    <tr>
+                      <td colspan="6" class="text-muted">Loading patients...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="modal fade" id="patientModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Add patient</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <form id="patientForm">
+              <div class="mb-3">
+                <label class="form-label">Name</label>
+                <input type="text" class="form-control" id="patientName" required />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input type="tel" class="form-control" id="patientPhone" required />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input type="email" class="form-control" id="patientEmail" />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Age</label>
+                <input type="number" class="form-control" id="patientAge" />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Notes</label>
+                <textarea class="form-control" id="patientNotes" rows="3"></textarea>
+              </div>
+              <button type="submit" class="btn btn-primary w-100">Save patient</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

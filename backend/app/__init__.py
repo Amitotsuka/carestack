@@ -1,0 +1,1 @@
+"""Hospital agent portal application."""
