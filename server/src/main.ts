@@ -25,8 +25,11 @@ async function bootstrap() {
     ? 'https://carestack-uat-web.onrender.com'
     : 'http://localhost:5173,http://localhost:5175,http://skycare.localhost:5175';
   const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, '');
-  const allowedOrigins = (process.env.CORS_ORIGINS || defaultOrigins)
-    .split(',').map(normalizeOrigin).filter(Boolean);
+  // The public UAT portal must remain allowed even if CORS_ORIGINS contains
+  // an old local URL or an extra integration origin.
+  const allowedOrigins = [defaultOrigins, process.env.CORS_ORIGINS || '']
+    .flatMap((origins) => origins.split(','))
+    .map(normalizeOrigin).filter(Boolean);
   app.enableCors({
     origin: (origin, callback) => {
       if (!origin || allowedOrigins.includes(normalizeOrigin(origin))) return callback(null, true);
