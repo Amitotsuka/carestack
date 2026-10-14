@@ -410,7 +410,8 @@ export class AppController {
     const policyError = this.appService.validateAgentBooking(tenantId, String(body?.appointment_time ?? ''));
     if (policyError) throw new BadRequestException(policyError);
 
-    const baseUrl = 'http://localhost:8000';
+    const configuredAgentUrl = (process.env.PYTHON_AGENT_URL || 'http://localhost:8000').trim().replace(/\/+$/, '');
+    const baseUrl = /^https?:\/\//i.test(configuredAgentUrl) ? configuredAgentUrl : `http://${configuredAgentUrl}`;
     try {
       const fetch = globalThis.fetch;
       const response = await fetch(`${baseUrl}/api/agent/phone-booking`, {

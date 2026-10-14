@@ -1,0 +1,73 @@
+services:
+  - type: pserv
+    name: carestack-uat-agent
+    runtime: python
+    plan: 0.5c-512mb
+    region: singapore
+    branch: main
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.11"
+      - key: PORT
+        value: "10000"
+
+  - type: web
+    name: carestack-uat-api
+    runtime: node
+    plan: 0.5c-512mb
+    region: singapore
+    branch: main
+    rootDir: server
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    disk:
+      name: carestack-uat-sqlite
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "24.21.0"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /var/data/hospital.sqlite
+      - key: PYTHON_AGENT_URL
+        fromService:
+          type: pserv
+          name: carestack-uat-agent
+          property: hostport
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CREDENTIALS_ENCRYPTION_KEY
+        generateValue: true
+      - key: VOICE_TOOL_SECRET
+        generateValue: true
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    runtime: static
+    name: carestack-uat-web
+    branch: main
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_VERSION
+        value: "24.21.0"
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: carestack-uat-api
+          envVarKey: RENDER_EXTERNAL_URL

@@ -1,5 +1,32 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+
+test('booking orchestration uses the configured private Python agent URL', async () => {
+  const { AppController } = require('../dist/app.controller.js');
+  const service = {
+    validateAgentBooking: () => null,
+    addBooking: (_tenantId, appointment) => appointment,
+  };
+  const controller = new AppController(service, null);
+  const priorFetch = global.fetch;
+  const priorUrl = process.env.PYTHON_AGENT_URL;
+  let requestedUrl = '';
+  process.env.PYTHON_AGENT_URL = 'carestack-uat-agent:10000';
+  global.fetch = async (url) => {
+    requestedUrl = url;
+    return { ok: true, json: async () => ({ appointment: { id: 'APT-UAT-1' } }) };
+  };
+  try {
+    const result = await controller.triggerOrchestration({ tenant_id: 'tenant-test', appointment_time: '10:30' });
+    assert.equal(requestedUrl, 'http://carestack-uat-agent:10000/api/agent/phone-booking');
+    assert.equal(result.appointment.id, 'APT-UAT-1');
+  } finally {
+    global.fetch = priorFetch;
+    if (priorUrl === undefined) delete process.env.PYTHON_AGENT_URL;
+    else process.env.PYTHON_AGENT_URL = priorUrl;
+  }
+});
+
 test('voice tools use tenant calendar, require confirmation, and make retries idempotent', async () => {
   const { AppService } = require('../dist/app.service.js');
   const { AppController } = require('../dist/app.controller.js');
