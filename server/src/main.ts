@@ -18,14 +18,18 @@ async function bootstrap() {
   }
 
   const app = await NestFactory.create(AppModule);
+  // Render forwards client requests through its proxy. Trust that one proxy so
+  // rate limiting can identify the caller correctly from X-Forwarded-For.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
   const defaultOrigins = isProduction
     ? 'https://carestack-uat-web.onrender.com'
     : 'http://localhost:5173,http://localhost:5175,http://skycare.localhost:5175';
+  const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, '');
   const allowedOrigins = (process.env.CORS_ORIGINS || defaultOrigins)
-    .split(',').map((origin) => origin.trim()).filter(Boolean);
+    .split(',').map(normalizeOrigin).filter(Boolean);
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      if (!origin || allowedOrigins.includes(normalizeOrigin(origin))) return callback(null, true);
       if (!isProduction && /^https?:\/\/(?:[a-z0-9-]+\.)?localhost(?::\d+)?$/i.test(origin)) return callback(null, true);
       return callback(null, false);
     },
