@@ -57,7 +57,9 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   await assert.rejects(controller.voiceTool('tenant-skycare', undefined, { action: 'clinic_info' }), /Voice tool authentication failed/);
   await assert.rejects(controller.voiceTool('tenant-skycare', '', { action: 'clinic_info' }, 'Basic invalid'), /Voice tool authentication failed/);
   await assert.rejects(controller.voiceTool('tenant-skycare', 'invalid-secret', { action: 'clinic_info' }), /Voice tool authentication failed/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, undefined), /Unsupported action/);
   await assert.rejects(controller.voiceTool('tenant-other', clinicSecret, { action: 'clinic_info' }), /Voice tool authentication failed/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'clinic_info' }, undefined, 'notdecidedyet5'), /x-tenant-id must match/);
   const otherClinicSecret = service.getVoiceToolSecret('tenant-other');
   assert.equal((await controller.voiceTool('tenant-other', otherClinicSecret, { action: 'clinic_info' })).clinic_name, 'Other Clinic');
   assert.equal(service.validateVoiceToolSecret('../tenant-skycare', clinicSecret), false);
@@ -70,6 +72,7 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   };
   const first = await controller.voiceTool('tenant-skycare', clinicSecret, request);
   assert.equal(first.appointment.status, 'confirmed');
+  assert.match(first.appointment.id, /^VOICE-call-request-001$/);
   assert.equal(first.appointment.duration_minutes, 30);
   assert.equal(first.idempotent_replay, false);
   const retry = await controller.voiceTool('tenant-skycare', clinicSecret, request);
@@ -84,16 +87,15 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   assert.equal(backToBack.available, true);
   const anotherDoctor = await controller.voiceTool('tenant-skycare', clinicSecret, { action: 'availability', date: request.date, time: '11:15', doctor_name: 'Dr. Other' });
   assert.equal(anotherDoctor.available, true);
-  const overlapBooking = await controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'overlap-request-001', time: '11:15' });
-  assert.match(overlapBooking.error, /overlaps an existing booking/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'overlap-request-001', time: '11:15' }), /overlaps an existing booking/);
 
-  const unconfirmed = await controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-002', confirmed: false });
-  assert.match(unconfirmed.error, /confirmation/);
-  const handoff = await controller.voiceTool('tenant-skycare', clinicSecret, { action: 'cancel' });
-  assert.match(handoff.error, /human receptionist/);
-  const invalidDate = await controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-003', date: '2030-02-31' });
-  assert.match(invalidDate.error, /future date/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-002', confirmed: false }), /confirmation/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'book', confirmed: true }), /request_id, patient_name, phone_number, doctor_name, date, time, reason/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'cancel' }), /human receptionist/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-003', date: '2030-02-31' }), /future date/);
   await assert.rejects(controller.voiceTool('tenant-unknown', service.getVoiceToolSecret('tenant-unknown'), { action: 'clinic_info' }), /Clinic not found/);
+  const normalizedAction = await controller.voiceTool('tenant-skycare', clinicSecret, { ...request, action: ' BOOK ', request_id: 'call-request-normalized', time: '12:00' });
+  assert.equal(normalizedAction.appointment.id, 'VOICE-call-request-normalized');
   assert.equal(service.validateVoiceToolSecret('tenant-skycare', clinicSecret), true);
   assert.equal(service.validateVoiceToolSecret('other-clinic', clinicSecret), false);
   const configuredMasterSecret = process.env.VOICE_TOOL_SECRET;
@@ -105,7 +107,7 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   }
 });
 
-test('clinic context is bounded, persisted, and exposed through safe FAQ lookup', () => {
+test('clinic context is bounded, persisted, and exposed through safe FAQ lookup', async () => {
   const { AppService } = require('../dist/app.service.js');
   const service = Object.create(AppService.prototype);
   const tenant = { id: 'tenant-context', name: 'Context Clinic', admin_phone: '+919876543210', patients: [], bookings: [], voice_agent: undefined };
@@ -116,11 +118,34 @@ test('clinic context is bounded, persisted, and exposed through safe FAQ lookup'
     languages: ['Hindi', 'English'], instructions: 'Ask caller to arrive early.', faqs: [{ question: 'Do you provide dental care?', answer: 'Yes, dental consultations are available.' }],
   } });
   assert.equal(saved.clinic_context.address, '12 Main Road');
-  assert.deepEqual(service.voiceTool(tenant.id, { action: 'clinic_info' }).services, ['Dental care']);
-  assert.equal(service.voiceTool(tenant.id, { action: 'faq', question: 'Do you provide dental care?' }).answer, 'Yes, dental consultations are available.');
-  assert.equal(service.voiceTool(tenant.id, { action: 'faq', question: 'Do you have parking?' }).handoff, true);
+  assert.deepEqual((await service.voiceTool(tenant.id, { action: 'clinic_info' })).services, ['Dental care']);
+  assert.equal((await service.voiceTool(tenant.id, { action: 'faq', question: 'Do you provide dental care?' })).answer, 'Yes, dental consultations are available.');
+  assert.equal((await service.voiceTool(tenant.id, { action: 'faq', question: 'Do you have parking?' })).handoff, true);
   assert.equal(service.previewVoiceAgent(tenant.id, 'Do you provide dental care?').reply, 'Yes, dental consultations are available.');
   assert.equal(service.updateVoiceAgent(tenant.id, { clinic_context: { address: 'x'.repeat(600) } }).clinic_context.address.length, 500);
+});
+
+test('voice booking does not report success when appointment persistence fails', async () => {
+  const { AppService } = require('../dist/app.service.js');
+  const { AppController } = require('../dist/app.controller.js');
+  const service = Object.create(AppService.prototype);
+  process.env.VOICE_TOOL_SECRET = 'test-master-secret-that-is-at-least-32-characters';
+  service.tenants = {
+    'tenant-skycare': {
+      id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata' },
+    },
+  };
+  service.pendingPostgresWrite = Promise.resolve();
+  service.persistState = () => { service.pendingPostgresWrite = Promise.reject(new Error('database unavailable')); };
+  const controller = new AppController(service, null);
+  const secret = service.getVoiceToolSecret('tenant-skycare');
+  const booking = {
+    action: 'book', request_id: 'db-failure-001', confirmed: true, patient_name: 'Test Patient',
+    phone_number: '+919876543210', doctor_name: 'Dr. Test', date: '2030-04-10', time: '11:00', reason: 'Consultation',
+  };
+  await assert.rejects(controller.voiceTool('tenant-skycare', secret, booking), /database unavailable/);
+  assert.equal(service.tenants['tenant-skycare'].bookings.length, 0);
 });
 
 test('Sarvam deployment adapter sends the clinic number and configured inbound hours', async () => {

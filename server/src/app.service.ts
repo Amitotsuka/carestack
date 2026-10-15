@@ -855,10 +855,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  voiceTool(tenantId: string, payload: any) {
+  async voiceTool(tenantId: string, payload: any) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return { error: 'Clinic not found.' };
-    const action = String(payload?.action || '');
+    const action = String(payload?.action ?? '').trim().toLowerCase();
     if (action === 'clinic_info') {
       const hours = this.getVoiceAgent(tenantId);
       const context = hours.clinic_context;
@@ -889,26 +889,38 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       return { available: !conflict, date, time, duration_minutes: this.appointmentDuration(tenantId), doctor_name: doctor, source: 'clinic appointment calendar', message: conflict ? this.scheduleConflictMessage(tenantId, conflict) : 'No overlapping appointment is recorded for this doctor in the requested time window. Confirm with the caller before booking.' };
     }
     if (action === 'book') {
+      const requiredFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'doctor_name', 'date', 'time', 'reason'];
+      const missingFields = requiredFields.filter((field) => payload?.[field] === undefined || payload?.[field] === null || (typeof payload[field] === 'string' && !payload[field].trim()));
+      if (missingFields.length) return { error: `Missing required booking fields: ${missingFields.join(', ')}.` };
       if (payload.confirmed !== true) return { error: 'Caller confirmation is required before booking.' };
-      const requestId = String(payload.request_id || '');
-      if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId)) return { error: 'A unique request_id is required for safe retries.' };
-      const date = String(payload.date || '');
-      const time = String(payload.time || '');
-      const patientName = String(payload.patient_name || '').trim();
-      const phone = String(payload.phone_number || '').trim();
-      const doctor = String(payload.doctor_name || '').trim();
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !this.isFutureClinicDate(tenantId, date, time) || patientName.length < 2 || !/^\+?[\d\s()-]{8,20}$/.test(phone) || !doctor) return { error: 'Valid patient name, phone, doctor, future date, and time are required.' };
+      const requestId = String(payload.request_id).trim();
+      if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId)) return { error: 'request_id must be 8 to 80 letters, numbers, underscores, or hyphens.' };
+      const date = String(payload.date).trim();
+      const time = String(payload.time).trim();
+      const patientName = String(payload.patient_name).trim();
+      const phone = String(payload.phone_number).trim();
+      const doctor = String(payload.doctor_name).trim();
+      const reason = String(payload.reason).trim();
+      if (patientName.length < 2 || patientName.length > 120) return { error: 'patient_name must be between 2 and 120 characters.' };
+      if (!/^\+?[\d\s()-]{8,20}$/.test(phone)) return { error: 'phone_number must contain a valid phone number.' };
+      if (doctor.length > 120) return { error: 'doctor_name must be 120 characters or fewer.' };
+      if (reason.length > 500) return { error: 'reason must be 500 characters or fewer.' };
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !this.isFutureClinicDate(tenantId, date, time)) return { error: 'Provide a valid future date in YYYY-MM-DD format and time in HH:mm format.' };
       const id = `VOICE-${requestId}`;
       const prior = tenant.bookings.find((booking) => booking.id === id);
-      if (prior) return { appointment: prior, idempotent_replay: true };
+      if (prior) {
+        await this.waitForPendingPersistence();
+        return { appointment: prior, idempotent_replay: true };
+      }
       const policy = this.validateAgentBooking(tenantId, time);
       if (policy) return { error: policy };
       const duration = this.appointmentDuration(tenantId);
       const conflict = this.findScheduleConflict(tenantId, date, time, doctor, duration);
       if (conflict) return { error: this.scheduleConflictMessage(tenantId, conflict) };
-      const appointment: Booking = { id, patient_name: patientName, phone_number: phone, doctor_name: doctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason: String(payload.reason || 'Inbound voice appointment'), status: 'confirmed' };
-      const saved = this.addBooking(tenantId, appointment);
+      const appointment: Booking = { id, patient_name: patientName, phone_number: phone, doctor_name: doctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason, status: 'confirmed' };
+      const saved = await this.addBooking(tenantId, appointment);
       if (!saved || 'error' in saved) return { error: saved && 'error' in saved ? saved.error : 'Could not save appointment.' };
+      if (!saved.id) return { error: 'Appointment persistence did not return an appointment ID.' };
       return { appointment: saved, idempotent_replay: false };
     }
     if (action === 'cancel' || action === 'reschedule') return { error: 'This appointment change is not enabled: patient verification and an authoritative scheduling integration are not configured. Offer a human receptionist.' };
@@ -1070,7 +1082,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     return this.tenants[tenantId]?.patients || [];
   }
 
-  addBooking(tenantId: string, booking: Booking) {
+  async addBooking(tenantId: string, booking: Booking) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return null;
 
@@ -1078,7 +1090,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     if (policyError) return { error: policyError };
 
     const existing = tenant.bookings.find((item) => item.id === booking.id);
-    if (existing) return existing;
+    if (existing) {
+      await this.waitForPendingPersistence();
+      return existing;
+    }
 
     const duration = Number(booking.duration_minutes) || this.appointmentDuration(tenantId);
     const conflict = this.findScheduleConflict(tenantId, booking.appointment_date, booking.appointment_time, booking.doctor_name, duration);
@@ -1086,8 +1101,19 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
     const savedBooking = { ...booking, duration_minutes: duration, created_at: booking.created_at || new Date().toISOString() };
     tenant.bookings.push(savedBooking);
-    this.persistState();
+    try {
+      this.persistState();
+      await this.waitForPendingPersistence();
+    } catch (error) {
+      const index = tenant.bookings.findIndex((item) => item.id === savedBooking.id);
+      if (index !== -1) tenant.bookings.splice(index, 1);
+      throw error;
+    }
     return savedBooking;
+  }
+
+  private async waitForPendingPersistence() {
+    await this.pendingPostgresWrite;
   }
 
   updateBookingStatus(tenantId: string, bookingId: string, status: string) {
