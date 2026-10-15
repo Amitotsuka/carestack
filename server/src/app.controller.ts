@@ -312,8 +312,18 @@ export class AppController {
   }
 
   @Post('api/voice/tools/:tenantId')
-  async voiceTool(@Param('tenantId') tenantId: string, @Headers('x-voice-tool-secret') suppliedSecret: string, @Body() body: any) {
-    if (!this.appService.validateVoiceToolSecret(tenantId, String(suppliedSecret || ''))) {
+  async voiceTool(
+    @Param('tenantId') tenantId: string,
+    @Headers('x-voice-tool-secret') suppliedSecret: string,
+    @Body() body: any,
+    @Headers('authorization') authorizationHeader: string,
+  ) {
+    const authorization = String(authorizationHeader || '').trim();
+    const bearerMatch = /^Bearer\s+([^\s]+)$/i.exec(authorization);
+    // Prefer the dedicated header. Bearer auth supports integrations that expose
+    // a standard Authorization field but do not expose arbitrary header names.
+    const credential = String(suppliedSecret || '').trim() || bearerMatch?.[1] || '';
+    if (!this.appService.validateVoiceToolSecret(tenantId, credential)) {
       throw new UnauthorizedException('Voice tool authentication failed');
     }
     const result = this.appService.voiceTool(tenantId, body);

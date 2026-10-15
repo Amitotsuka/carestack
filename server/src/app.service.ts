@@ -797,6 +797,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   validateVoiceToolSecret(tenantId: string, suppliedSecret: string) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(tenantId) || tenantId.length > 64) return false;
     const master = process.env.VOICE_TOOL_SECRET || '';
     if (master.length < 32) return false;
     const expected = Buffer.from(createHmac('sha256', master).update(tenantId).digest('hex'));
@@ -805,6 +806,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   getVoiceToolSecret(tenantId: string) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(tenantId) || tenantId.length > 64) return '';
     const master = process.env.VOICE_TOOL_SECRET || '';
     return master.length >= 32 ? createHmac('sha256', master).update(tenantId).digest('hex') : '';
   }
