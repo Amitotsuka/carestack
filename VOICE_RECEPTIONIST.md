@@ -8,7 +8,7 @@ The Python service is a separate demo agent with in-memory data. Inbound voice a
 
 ## Provider setup
 
-Set a random `VOICE_TOOL_SECRET` of at least 32 characters on the Nest server and restart it. After saving a clinic's calling settings, copy its clinic-specific `voice_tool_secret` from Super Admin into the provider's API tool as `x-voice-tool-secret`. It is derived server-side and bound to that tenant. Do not put the master secret in browser code. Both providers call `POST https://<public-api-host>/api/voice/tools/<tenant-id>` with a JSON body. Supported actions are `clinic_info`, `faq`, `availability`, and `book`; `cancel` and `reschedule` return an unsupported response.
+Set a random `VOICE_TOOL_SECRET` of at least 32 characters on the Nest server and restart it. After saving a clinic's calling settings, copy its clinic-specific `voice_tool_secret` from Super Admin into the provider's API tool as `x-voice-tool-secret`. Exotel's VoiceBot Tool Integration supports request headers; configure this under the tool's Headers section, not as an AI-visible body parameter. If an integration only exposes the standard Authorization field, this API also accepts `Authorization: Bearer <clinic-specific-secret>`. Both credentials are derived server-side and bound to that tenant. Do not put the master secret in browser code, prompts, request bodies, or query strings. Both providers call `POST https://<public-api-host>/api/voice/tools/<tenant-id>` with a JSON body. Supported actions are `clinic_info`, `faq`, `availability`, and `book`; `cancel` and `reschedule` return an unsupported response.
 
 Clinic administrators maintain the AI receptionist's approved reference in the Agents page: clinic address, services, doctors, fees, supported languages, custom receptionist instructions, and up to 25 FAQs. `clinic_info` returns this context at call start; `faq` returns an approved answer or explicitly asks the agent to hand off. This is live context retrieval and prompt grounding, not model fine-tuning. Changes apply to subsequent tool calls.
 
@@ -25,7 +25,7 @@ Clinic administrators maintain the AI receptionist's approved reference in the A
 2. Set a stable `CREDENTIALS_ENCRYPTION_KEY` of at least 32 characters on the Nest server. Back it up securely and keep it unchanged so saved provider credentials can be decrypted after restarts and restores.
 3. Click **Verify Exotel account**. This calls Exotel's read-only Account Balance API; it does not dial or place a call.
 4. Save calling settings. Super Admin then shows this clinic's public API tool endpoint and clinic-specific `x-voice-tool-secret`. `VOICE_TOOL_SECRET` (at least 32 random characters) must be set on the API server. The API must have a public HTTPS URL that Exotel can reach; localhost is not reachable from Exotel.
-5. In Exotel Voicebot → Build Bot → Tool Integration, add active POST integrations to the endpoint shown in Super Admin. Set the `x-voice-tool-secret` header to the clinic-specific secret. Create tools for `clinic_info`, `availability` and `book` using the request bodies in Super Admin. Attach the tools to the bot and map the fields from what the caller says. Publish the bot.
+5. In Exotel Voicebot → Build Bot → Tool Integration, add active POST integrations to the endpoint shown in Super Admin. The official Tool Integration supports adding request headers: set `x-voice-tool-secret` to the clinic-specific secret there. If your account only provides an Authorization field, set it to `Bearer <clinic-specific-secret>` instead. Do not add the secret as a model parameter, JSON body field, or URL query parameter. Create tools for `clinic_info`, `availability` and `book` using the request bodies in Super Admin. Attach the tools to the bot and map the fields from what the caller says. Publish the bot.
 6. In App Bazaar, create a call flow with a Greeting and IVR Menu. For example, say “Press 1 for appointment booking”; route digit 1 to this clinic's published Voicebot applet. Assign the flow to the clinic's ExoPhone. Test through the Voicebot console or call the ExoPhone.
 
 The IVR selection routes the caller to the booking agent; a digit alone is not enough to create an appointment. The bot collects the patient's name, callback number, doctor, future date/time and reason, checks the clinic calendar, reads the details back and gets explicit caller confirmation. It then calls the `book` tool, which immediately writes the confirmed appointment to this clinic's CareStack appointment register and returns a booking ID for the bot to read back. Exotel's setup supports an IVR menu before the Voicebot applet; see [Exotel Voicebot guide](https://docs.exotel.com/intelligent-voice-agents) and [Voicebot tool integration](https://docs.exotel.com/intelligent-voice-agents/tool-integration-for-voicebot).
@@ -34,7 +34,7 @@ Exotel Voicebot supplies its own WebSocket endpoint. This application does not r
 
 ## API tool contract
 
-All requests require `x-voice-tool-secret`; invalid/missing configuration returns 401. Example bodies:
+All requests require the clinic-specific credential, supplied either as `x-voice-tool-secret` or as `Authorization: Bearer <secret>`; invalid/missing configuration returns 401. The credential must not be sent in the JSON body or URL query. Example bodies:
 
 ```json
 {"action":"clinic_info"}

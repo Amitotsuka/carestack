@@ -38,6 +38,11 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
       voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata' },
       telephony: { phone_number: '+919876543211' }, patients: [], bookings: [],
     },
+    'tenant-other': {
+      id: 'tenant-other', name: 'Other Clinic', admin_phone: '+919876543212',
+      voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata' },
+      telephony: { phone_number: '+919876543213' }, patients: [], bookings: [],
+    },
   };
   service.persistState = () => {};
   const controller = new AppController(service, null);
@@ -47,6 +52,16 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   assert.equal(details.clinic_name, 'SkyCare Multi-Speciality');
   assert.equal(details.address, null);
   assert.deepEqual(details.faqs, []);
+  const bearerDetails = await controller.voiceTool('tenant-skycare', '', { action: 'clinic_info' }, `Bearer ${clinicSecret}`);
+  assert.equal(bearerDetails.clinic_name, 'SkyCare Multi-Speciality');
+  await assert.rejects(controller.voiceTool('tenant-skycare', undefined, { action: 'clinic_info' }), /Voice tool authentication failed/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', '', { action: 'clinic_info' }, 'Basic invalid'), /Voice tool authentication failed/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', 'invalid-secret', { action: 'clinic_info' }), /Voice tool authentication failed/);
+  await assert.rejects(controller.voiceTool('tenant-other', clinicSecret, { action: 'clinic_info' }), /Voice tool authentication failed/);
+  const otherClinicSecret = service.getVoiceToolSecret('tenant-other');
+  assert.equal((await controller.voiceTool('tenant-other', otherClinicSecret, { action: 'clinic_info' })).clinic_name, 'Other Clinic');
+  assert.equal(service.validateVoiceToolSecret('../tenant-skycare', clinicSecret), false);
+  assert.equal(service.getVoiceToolSecret('../tenant-skycare'), '');
 
   const request = {
     action: 'book', request_id: 'call-request-001', confirmed: true,
@@ -78,10 +93,16 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   assert.match(handoff.error, /human receptionist/);
   const invalidDate = await controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-003', date: '2030-02-31' });
   assert.match(invalidDate.error, /future date/);
-  await assert.rejects(controller.voiceTool('other-clinic', service.getVoiceToolSecret('other-clinic'), { action: 'clinic_info' }), /Clinic not found/);
-  await assert.rejects(controller.voiceTool('tenant-skycare', 'wrong-clinic-secret', { action: 'clinic_info' }), /Voice tool authentication failed/);
+  await assert.rejects(controller.voiceTool('tenant-unknown', service.getVoiceToolSecret('tenant-unknown'), { action: 'clinic_info' }), /Clinic not found/);
   assert.equal(service.validateVoiceToolSecret('tenant-skycare', clinicSecret), true);
   assert.equal(service.validateVoiceToolSecret('other-clinic', clinicSecret), false);
+  const configuredMasterSecret = process.env.VOICE_TOOL_SECRET;
+  try {
+    delete process.env.VOICE_TOOL_SECRET;
+    assert.equal(service.validateVoiceToolSecret('tenant-skycare', clinicSecret), false);
+  } finally {
+    process.env.VOICE_TOOL_SECRET = configuredMasterSecret;
+  }
 });
 
 test('clinic context is bounded, persisted, and exposed through safe FAQ lookup', () => {

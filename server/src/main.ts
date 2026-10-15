@@ -37,7 +37,7 @@ async function bootstrap() {
       return callback(null, false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-voice-tool-secret'],
   });
   app.getHttpAdapter().getInstance().disable('x-powered-by');
   app.use(helmet());
