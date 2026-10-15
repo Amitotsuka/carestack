@@ -317,7 +317,6 @@ export class AppController {
     @Headers('x-voice-tool-secret') suppliedSecret: string,
     @Body() body: any,
     @Headers('authorization') authorizationHeader: string,
-    @Headers('x-tenant-id') suppliedTenantId: string,
   ) {
     const authorization = String(authorizationHeader || '').trim();
     const bearerMatch = /^Bearer\s+([^\s]+)$/i.exec(authorization);
@@ -327,10 +326,8 @@ export class AppController {
     if (!this.appService.validateVoiceToolSecret(tenantId, credential)) {
       throw new UnauthorizedException('Voice tool authentication failed');
     }
-    const headerTenantId = String(suppliedTenantId || '').trim();
-    if (headerTenantId && headerTenantId !== tenantId) {
-      throw new BadRequestException('x-tenant-id must match the tenant ID in the URL');
-    }
+    // Exotel can inject its own x-tenant-id metadata. Route tenant and the
+    // credential derived for that tenant are authoritative for this endpoint.
     const result = await this.appService.voiceTool(tenantId, body);
     if ('error' in result && result.error === 'Clinic not found.') throw new NotFoundException('Clinic not found');
     if ('error' in result) throw new BadRequestException(result.error);

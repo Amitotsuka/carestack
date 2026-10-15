@@ -59,7 +59,8 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   await assert.rejects(controller.voiceTool('tenant-skycare', 'invalid-secret', { action: 'clinic_info' }), /Voice tool authentication failed/);
   await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, undefined), /Unsupported action/);
   await assert.rejects(controller.voiceTool('tenant-other', clinicSecret, { action: 'clinic_info' }), /Voice tool authentication failed/);
-  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'clinic_info' }, undefined, 'notdecidedyet5'), /x-tenant-id must match/);
+  const urlTenantWins = await controller.voiceTool('tenant-skycare', clinicSecret, { action: 'clinic_info' }, undefined, 'notdecidedyet5');
+  assert.equal(urlTenantWins.clinic_name, 'SkyCare Multi-Speciality');
   const otherClinicSecret = service.getVoiceToolSecret('tenant-other');
   assert.equal((await controller.voiceTool('tenant-other', otherClinicSecret, { action: 'clinic_info' })).clinic_name, 'Other Clinic');
   assert.equal(service.validateVoiceToolSecret('../tenant-skycare', clinicSecret), false);
