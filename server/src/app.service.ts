@@ -945,7 +945,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         availability_source: 'portal appointment calendar',
         appointment_duration_minutes: this.appointmentDuration(tenantId),
         address: context.address || null, services: context.services, fees: context.fees || null, doctors: this.getClinicDoctorCandidates(tenantId),
-        doctor_list_source: 'clinic configuration and existing appointment records',
+        doctor_list_source: 'clinic configuration',
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
         response_policy: 'Only values returned here are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. Offer a human receptionist for other clinic questions.',
       };
@@ -1056,7 +1056,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       if (assignedDoctor) {
         const knownDoctor = this.getClinicDoctorCandidates(tenantId)
           .find((candidate) => candidate.toLocaleLowerCase() === assignedDoctor.toLocaleLowerCase());
-        if (!knownDoctor) return { error: 'doctor_name must match a doctor configured for this clinic or present in its appointment records.' };
+        if (!knownDoctor) return { error: 'doctor_name must match a doctor configured for this clinic.' };
         assignedDoctor = knownDoctor;
       }
       if (!assignedDoctor) {
@@ -1295,8 +1295,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   private getClinicDoctorCandidates(tenantId: string) {
     const configured = this.getVoiceAgent(tenantId).clinic_context?.doctors || [];
-    const previouslyBooked = this.tenants[tenantId]?.bookings?.map((booking) => booking.doctor_name) || [];
-    const names = [...configured, ...previouslyBooked]
+    const names = configured
       .map((name: unknown) => String(name || '').trim())
       .filter(Boolean);
     const unique = new Map<string, string>();
