@@ -16,6 +16,13 @@ Useful conversational phrases:
 
 Use natural respectful language such as “ji”. Avoid repeatedly saying “please wait” or making the caller repeat details already given.
 
+## Clinic doctor list
+
+- The approved doctor roster is the `doctors` array returned by a live `carestack` call with `action: "clinic_info"`. When a caller asks which doctors are at the clinic, call `clinic_info` during that turn before answering.
+- Name only doctors present in that live result. Do not answer from memory, prior turns, examples, appointment history, or guessed names. Do not invent, translate, autocomplete, or substitute a doctor name.
+- If the tool fails or returns an empty `doctors` array, say you cannot verify the clinic's doctor list and offer to connect the caller with clinic staff. Do not list alternatives.
+- The current integration has no external CareStack doctor-directory sync. The clinic roster must be verified and saved in clinic configuration; old appointment records are not an authoritative doctor list.
+
 ## Understand Indian dates and times
 
 - Use the current date and time at call runtime in `Asia/Kolkata`. Never use a date remembered from training or a hard-coded example.
@@ -100,7 +107,11 @@ Agent behavior: Resolve “kal” to the next calendar day in India, use `17:00`
 
 Availability is checked against appointments stored in the CareStack portal's calendar, including bookings made through this system. It is not yet synchronized with an external CareStack account calendar. Training text guides the conversation; it does not configure the Exotel API request. The backend can read recognized fields from the request itself or common JSON wrappers such as `arguments`, `parameters`, `input`, and `payload`; it can also read a list of `{name, value}` parameters. It can infer only a read-only availability action when both date and time arrive and no booking fields are present. It never infers a booking. An empty body has no information from which to determine an action or appointment time.
 
+The `carestack` tool must be attached to the calling agent and accept `action: "clinic_info"` so the agent can answer doctor-list questions from the live `doctors` array. Update the Exotel main Behavior prompt with the Clinic doctor list rules above and save/roll out the agent. Updating this training document alone does not change the prompt or configuration stored in Exotel.
+
 The Exotel tool schema must still expose `action`, `date`, `time`, and `doctor_name` as required inputs because Exotel may validate the tool call before making any HTTP request. Set availability's action to `availability`; map date, time, and doctor name from the agent's extracted arguments. Keep `doctor_name` a string and pass an empty string when the caller has no preference. Save and roll out the tool and agent after changes. Verify in Render logs that a real availability call has action `availability` and reaches the backend before relying on the workflow.
+
+In the Exotel agent's `doctor_name` parameter description, explicitly say: “If the caller names a doctor, use that exact name from `clinic_info`. If the caller has no doctor preference, send an empty string (`""`) so availability checks all configured doctors. Never choose a default doctor.” Do not use the older instruction to select a doctor from the list; it makes the agent send names such as Dr. Sharma even when the caller did not request one. Parameter-level instructions must agree with the main Behavior prompt.
 
 For `carestack_book_appointment`, `reason` is optional in the backend and in [the canonical booking schema](../server/schemas/exotel-carestack-book-appointment.schema.json). In Exotel's agent parameter settings, uncheck **Required** for `reason`; keep it as a body string parameter if you want the agent to pass caller-provided reasons. Do not configure a constant or invented default.
 
