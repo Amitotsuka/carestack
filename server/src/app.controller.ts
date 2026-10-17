@@ -597,6 +597,7 @@ export class AppController {
     let authenticationMs = 0;
     let dispatchMs = 0;
     let outcome = 'success';
+    let failureCode: string | undefined;
     try {
       const authStarted = performance.now();
       const authorization = String(authorizationHeader || '').trim();
@@ -607,9 +608,18 @@ export class AppController {
       const credential = String(suppliedSecret || '').trim() || bearerMatch?.[1] || bodyCredential;
       const authenticated = this.appService.validateVoiceToolSecret(tenantId, credential);
       authenticationMs = performance.now() - authStarted;
-      if (!authenticated) throw new UnauthorizedException('Voice tool authentication failed');
+      this.logger.log(JSON.stringify({
+        event: 'voice_tool.stage', trace_id: traceId, tenant_id: tenantId, action,
+        stage: 'authentication', outcome: authenticated ? 'success' : 'failed',
+        ...(!authenticated ? { reason_code: 'authentication_failed' } : {}),
+      }));
+      if (!authenticated) {
+        failureCode = 'authentication_failed';
+        throw new UnauthorizedException('Voice tool authentication failed');
+      }
 
       if (extracted.conflicts.length) {
+        failureCode = 'conflicting_arguments';
         throw new BadRequestException(`Conflicting values for voice tool field(s): ${extracted.conflicts.join(', ')}.`);
       }
 
@@ -619,10 +629,11 @@ export class AppController {
       // wrapper/context fields are excluded and never logged.
       delete toolPayload.tool_secret;
       if (toolPayload.action === undefined) {
+        failureCode = 'missing_action';
         throw new BadRequestException('Could not determine the tool action. Send action, or provide both date and time for an availability check.');
       }
       const dispatchStarted = performance.now();
-      const result = await this.appService.voiceTool(tenantId, toolPayload);
+      const result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
       dispatchMs = performance.now() - dispatchStarted;
       if ('error' in result && result.error === 'Clinic not found.') throw new NotFoundException('Clinic not found');
       if ('error' in result && result.unavailable === true) {
@@ -635,6 +646,11 @@ export class AppController {
         : error instanceof UnauthorizedException ? 'unauthorized'
           : error instanceof BadRequestException ? 'rejected'
             : 'error';
+      failureCode ||= error instanceof ServiceUnavailableException ? 'booking_storage_unavailable'
+        : error instanceof UnauthorizedException ? 'authentication_failed'
+          : error instanceof NotFoundException ? 'clinic_not_found'
+            : error instanceof BadRequestException ? 'tool_request_rejected'
+              : 'unexpected_exception';
       throw error;
     } finally {
       this.logger.log(JSON.stringify({
@@ -645,6 +661,7 @@ export class AppController {
         body_field_names: safeVoiceBodyFieldNames(body),
         authentication_ms: Number(authenticationMs.toFixed(2)), dispatch_ms: Number(dispatchMs.toFixed(2)),
         total_ms: Number((performance.now() - started).toFixed(2)), outcome,
+        ...(failureCode ? { failure_code: failureCode } : {}),
       }));
     }
   }

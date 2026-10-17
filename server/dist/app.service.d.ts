@@ -513,7 +513,10 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         };
         error?: undefined;
     }>;
-    voiceTool(tenantId: string, payload: any): Promise<{
+    private logVoiceToolStage;
+    private voiceToolFailureCode;
+    private voiceToolResultDetails;
+    voiceTool(tenantId: string, payload: any, traceId?: `${string}-${string}-${string}-${string}-${string}`): Promise<{
         error: string;
         clinic_name?: undefined;
         phone_number?: undefined;

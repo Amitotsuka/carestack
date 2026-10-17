@@ -38,6 +38,56 @@ const availableClinicViews = (user) => {
   ].filter(Boolean);
 };
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+function useListPagination(items, resetKey = '') {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSizeState] = useState(10);
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const startIndex = (currentPage - 1) * pageSize;
+
+  useEffect(() => setPage(1), [resetKey]);
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  return {
+    items: items.slice(startIndex, startIndex + pageSize),
+    page: currentPage,
+    pageCount,
+    pageSize,
+    total: items.length,
+    start: items.length ? startIndex + 1 : 0,
+    end: Math.min(startIndex + pageSize, items.length),
+    setPage,
+    setPageSize: (value) => {
+      setPage(1);
+      setPageSizeState(Number(value));
+    },
+  };
+}
+
+function ListPagination({ pagination, label = 'records' }) {
+  if (pagination.total <= 10) return null;
+
+  return <div className="list-pagination" aria-label={`${label} pagination`}>
+    <span className="list-pagination-range">Showing {pagination.start}–{pagination.end} of {pagination.total} {label}</span>
+    <div className="list-pagination-controls">
+      <label className="list-pagination-size">Rows per page
+        <select className="form-select form-select-sm" value={pagination.pageSize} onChange={(event) => pagination.setPageSize(event.target.value)} aria-label={`Rows per page for ${label}`}>
+          {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+        </select>
+      </label>
+      {pagination.pageCount > 1 && <div className="list-pagination-pages">
+        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => pagination.setPage(pagination.page - 1)} disabled={pagination.page <= 1}>Previous</button>
+        <span>Page {pagination.page} of {pagination.pageCount}</span>
+        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => pagination.setPage(pagination.page + 1)} disabled={pagination.page >= pagination.pageCount}>Next</button>
+      </div>}
+    </div>
+  </div>;
+}
+
 const request = async (path, options = {}) => {
   let accessToken = '';
   try {
@@ -1291,6 +1341,7 @@ function App() {
     { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
     { id: 'enterprise', name: 'Enterprise', monthly_price: 39999, annual_price: 399990, clinic_limit: null, user_limit: null },
   ];
+  const marketedPlanPagination = useListPagination(marketedPlans, `marketed-plans:${page}`);
   const maxPlanCount = Math.max(1, ...planBreakdown.map((item) => item.count));
   const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', {
     style: 'currency', currency: 'INR', maximumFractionDigits: 0,
@@ -1317,6 +1368,16 @@ function App() {
     return matchesQuery && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
   });
   const displayedPatients = activeView === 'patients' ? filteredPatients : patients.slice(0, 8);
+  const clinicInterestPagination = useListPagination(clinicInterests, `leads:${activeView}`);
+  const tenantPagination = useListPagination(tenants, `tenants:${activeView}`);
+  const subscriptionTenantPagination = useListPagination(tenants, `subscriptions:${activeView}`);
+  const planPagination = useListPagination(plans, `plans:${activeView}`);
+  const staffPagination = useListPagination(staff, `staff:${activeView}:${session?.tenant_id || ''}`);
+  const doctorPagination = useListPagination(tenantData?.doctors || [], `doctors:${activeView}:${session?.tenant_id || ''}`);
+  const appointmentPagination = useListPagination(filteredBookings, `appointments:${activeView}:${appointmentQuery}:${appointmentStatusFilter}:${appointmentDateFilter}`);
+  const patientPagination = useListPagination(filteredPatients, `patients:${activeView}:${patientQuery}:${patientStatusFilter}`);
+  const doctorWorkloadPagination = useListPagination(analytics.doctor_workload, `doctor-workload:${activeView}`);
+  const planBreakdownPagination = useListPagination(planBreakdown, `plan-breakdown:${activeView}`);
   const clinicDoctors = [...new Set([...(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.name), bookingForm.doctor_name].filter(Boolean))];
   const upcomingBookings = bookings.filter((booking) => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1394,12 +1455,13 @@ function App() {
         <div className="col-lg-7"><section className="admin-panel h-100">
           <div className="admin-panel-heading"><div><h3>Plan distribution</h3><p>Tenant allocation by subscribed plan</p></div><button className="btn btn-sm btn-outline-primary" onClick={() => setActiveView('subscriptions')}>Manage plans</button></div>
           <div className="admin-bars" role="img" aria-label="Tenant count by subscription plan">
-            {planBreakdown.map((item, index) => <div className="admin-bar-row" key={item.id}>
+            {planBreakdownPagination.items.map((item, index) => <div className="admin-bar-row" key={item.id}>
               <span className="admin-bar-label">{item.name}</span>
               <div className="admin-bar-track"><span className={`admin-bar-fill tone-${index}`} style={{ width: `${Math.max(0, (item.count / maxPlanCount) * 100)}%` }} /></div>
               <strong>{item.count}</strong>
             </div>)}
           </div>
+          <ListPagination pagination={planBreakdownPagination} label="plans" />
         </section></div>
         <div className="col-lg-5"><section className="admin-panel h-100">
           <div className="admin-panel-heading"><div><h3>Subscription health</h3><p>Active versus paused accounts</p></div></div>
@@ -1424,7 +1486,7 @@ function App() {
     <>
       <div className="admin-panel-heading subscription-title"><div><h3>Plans and subscriptions</h3><p>Review pricing, assign plans, and control billing state.</p></div></div>
       <div className="row g-3 mb-4">
-        {plans.map((plan, index) => <div className="col-md-4" key={plan.id}><section className={`plan-panel plan-tone-${index}`}>
+        {planPagination.items.map((plan, index) => <div className="col-md-4" key={plan.id}><section className={`plan-panel plan-tone-${index}`}>
           <div className="d-flex justify-content-between align-items-start"><div><small>CARE PLAN</small><h3>{plan.name}</h3></div><span className="plan-count">{tenants.filter((tenant) => tenant.plan === plan.id).length} tenants</span></div>
           <p className="plan-price">{formatCurrency(plan.monthly_price)}<span> / month</span></p>
           <p className="plan-annual">{formatCurrency(plan.annual_price)} billed annually</p>
@@ -1432,6 +1494,7 @@ function App() {
           <div className="d-flex gap-2 mt-3"><button className="btn btn-sm btn-outline-primary" onClick={() => editPlan(plan)}>Edit plan</button><button className="btn btn-sm btn-outline-danger" onClick={() => removePlan(plan)}>Delete plan</button></div>
         </section></div>)}
       </div>
+      <ListPagination pagination={planPagination} label="plans" />
       <section className="admin-panel mb-4" id="plan-management-form">
         <button type="button" className={`workspace-section-toggle ${planFormOpen ? 'is-open' : ''}`} aria-expanded={planFormOpen} aria-controls="plan-management-fields" onClick={() => setPlanFormOpen((open) => !open)}>
           <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{editingPlanId ? 'Edit plan' : 'Create a plan'}</span><span className="workspace-section-toggle-description">Set plan rates and included workspace limits. Leave a limit blank for unlimited.</span></span>
@@ -1455,7 +1518,7 @@ function App() {
         <div className="admin-panel-heading"><div><h3>Subscription register</h3><p>Plan and billing changes apply immediately.</p></div></div>
         <div className="table-responsive"><table className="table align-middle mb-0">
           <thead><tr><th>Clinic</th><th>Plan</th><th>Billing</th><th>Monthly value</th><th>Status</th><th>Action</th></tr></thead>
-          <tbody>{tenants.map((tenant) => <tr key={tenant.id}>
+          <tbody>{subscriptionTenantPagination.items.map((tenant) => <tr key={tenant.id}>
             <td><div className="fw-semibold">{tenant.name}</div><small><a href={getTenantPortalUrl(tenant.domain)}>{getTenantPortalUrl(tenant.domain)}</a></small></td>
             <td><select className="form-select form-select-sm plan-select" aria-label={`Plan for ${tenant.name}`} value={tenant.plan} onChange={(event) => updateSubscription(tenant.id, { plan: event.target.value })}>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></td>
             <td><select className="form-select form-select-sm cycle-select" aria-label={`Billing cycle for ${tenant.name}`} value={tenant.billing_cycle} onChange={(event) => updateSubscription(tenant.id, { billing_cycle: event.target.value })}><option value="monthly">Monthly</option><option value="annual">Annual</option></select></td>
@@ -1464,6 +1527,7 @@ function App() {
             <td><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button></td>
           </tr>)}{tenants.length === 0 && <tr><td colSpan="6" className="text-muted py-4">No subscriptions to manage.</td></tr>}</tbody>
         </table></div>
+        <ListPagination pagination={subscriptionTenantPagination} label="clinics" />
       </section>
     </>
   );
@@ -1517,12 +1581,13 @@ function App() {
 
         <section className="subscription-section" id="plans">
           <div className="section-heading"><div><p className="section-kicker">A PLAN THAT GROWS WITH YOUR CLINIC</p><h2>One calmer front desk.<br />A clear monthly price.</h2></div><p>Start with one clinic, add locations when you’re ready, and keep calls, bookings and patient follow-up in one workspace.</p></div>
-          <div className="subscription-cards">{marketedPlans.map((plan) => <article className={`subscription-card ${plan.id === 'growth' ? 'subscription-card-featured' : ''}`} key={plan.id}>
+          <div className="subscription-cards">{marketedPlanPagination.items.map((plan) => <article className={`subscription-card ${plan.id === 'growth' ? 'subscription-card-featured' : ''}`} key={plan.id}>
             {plan.id === 'growth' && <span className="subscription-popular">MOST POPULAR</span>}
             <p className="section-kicker">{plan.name.toUpperCase()}</p><h3>{formatCurrency(plan.monthly_price)}<small> / month</small></h3><p className="subscription-yearly">{formatCurrency(plan.annual_price)} billed annually</p>
             <ul><li>{plan.clinic_limit || 'Unlimited'} {plan.clinic_limit === 1 ? 'clinic' : 'clinics'}</li><li>{plan.user_limit || 'Unlimited'} team members</li><li>Patient and appointment workspace</li><li>Agent workflow and clinic-hour controls</li><li>Reports and appointment exports</li></ul>
             <button className={plan.id === 'growth' ? 'button-dark' : 'button-outline'} onClick={() => { setClinicInterestForm({ ...emptyClinicInterest, plan: plan.id }); document.getElementById('clinic-request')?.scrollIntoView({ behavior: 'smooth' }); }}>Request {plan.name} <span aria-hidden="true">→</span></button>
           </article>)}</div>
+          <ListPagination pagination={marketedPlanPagination} label="plans" />
           <div className="clinic-request-card" id="clinic-request">
             <div><p className="section-kicker">GET YOUR CLINIC STARTED</p><h3>See how CareStack fits your front desk.</h3><p>Send a short request and our team can help set up your clinic workspace and calling line.</p></div>
             <form onSubmit={submitClinicInterest}>
@@ -1794,15 +1859,15 @@ function App() {
 
               {superAdmin && activeView === 'overview' && renderAdminOverview()}
               {superAdmin && activeView === 'subscriptions' && renderSubscriptions()}
-              {superAdmin && activeView === 'leads' && <div className="card border-0 shadow-sm rounded-4 mb-4"><div className="card-body"><h4 className="mb-1">New clinic interest</h4><p className="text-muted mb-3">Follow up with clinics that requested subscription information or a demo.</p><div className="table-responsive"><table className="table align-middle"><thead><tr><th>Clinic</th><th>Contact</th><th>Phone</th><th>Plan</th><th>Received</th></tr></thead><tbody>{clinicInterests.length ? clinicInterests.map((lead) => <tr key={lead.id}><td className="fw-semibold">{lead.clinic_name}<small className="d-block text-muted">{lead.email}</small></td><td>{lead.contact_name}</td><td><a href={`tel:${lead.phone}`}>{lead.phone}</a></td><td className="text-capitalize">{lead.plan}</td><td>{new Date(lead.created_at).toLocaleDateString('en-IN')}</td></tr>) : <tr><td colSpan="5" className="text-muted py-4">No clinic requests yet.</td></tr>}</tbody></table></div></div></div>}
+              {superAdmin && activeView === 'leads' && <div className="card border-0 shadow-sm rounded-4 mb-4"><div className="card-body"><h4 className="mb-1">New clinic interest</h4><p className="text-muted mb-3">Follow up with clinics that requested subscription information or a demo.</p><div className="table-responsive"><table className="table align-middle"><thead><tr><th>Clinic</th><th>Contact</th><th>Phone</th><th>Plan</th><th>Received</th></tr></thead><tbody>{clinicInterests.length ? clinicInterestPagination.items.map((lead) => <tr key={lead.id}><td className="fw-semibold">{lead.clinic_name}<small className="d-block text-muted">{lead.email}</small></td><td>{lead.contact_name}</td><td><a href={`tel:${lead.phone}`}>{lead.phone}</a></td><td className="text-capitalize">{lead.plan}</td><td>{new Date(lead.created_at).toLocaleDateString('en-IN')}</td></tr>) : <tr><td colSpan="5" className="text-muted py-4">No clinic requests yet.</td></tr>}</tbody></table></div><ListPagination pagination={clinicInterestPagination} label="clinic requests" /></div></div>}
 
               {superAdmin && activeView === 'tenants' && <div className="card border-0 shadow-sm rounded-4 mb-4">
                 <div className="card-body">
                   <h4 className="mb-3">Tenant organizations</h4>
-                  {voiceToolSecret && <div className="alert alert-info" role="status"><strong>Connect this clinic’s Exotel IVR to CareStack booking</strong><p className="mb-2">This clinic-scoped secret lets the Exotel Voicebot call its CareStack tools. Copy it into the Exotel tool’s <code>x-voice-tool-secret</code> header. If Exotel has no header value field, add POST body parameter tool_secret and set it as a Constant Value in the attached tool, never an LLM prompt. The API validates it for the URL tenant and strips it before processing; use HTTPS.</p><label className="form-label">Exotel reachable API base URL</label><input className="form-control font-monospace mb-2" value={voiceToolApiBaseUrl} onChange={(event) => { const value = event.target.value.trim().replace(/\/+$/, ''); setVoiceToolApiBaseUrl(value); try { localStorage.setItem('carestack-voice-tool-api-base-url', value); } catch {} }} placeholder={API_URL} /><small className="d-block text-muted mb-2">The default uses the configured CareStack API URL. For local testing use <code>http://localhost:3001</code>; Exotel calls require the API service's public HTTPS URL.</small><label className="form-label">Clinic voice tool endpoint</label><input className="form-control font-monospace mb-2" readOnly value={`${voiceToolApiBaseUrl.replace(/\/+$/, '')}/api/voice/tools/${telephonyTenantId}`} onFocus={(event) => event.target.select()} />{/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(voiceToolApiBaseUrl) && <p className="alert alert-warning py-2">Exotel cloud cannot reach localhost. The local endpoint works for testing on this machine; calls from Exotel need a public HTTPS URL.</p>}<label className="form-label">Clinic tool secret</label><input className="form-control font-monospace" readOnly value={voiceToolSecret} onFocus={(event) => event.target.select()} /><div className="mt-3"><strong>Exotel console setup</strong><ol className="mb-2 mt-2"><li>In <b>Build Bot → Tool Integration</b>, create three active POST tools using the endpoint above and JSON request bodies below. Set the clinic secret as a constant x-voice-tool-secret header. If this UI has no header value field, add POST body parameter tool_secret and map it as a Constant Value (never an LLM prompt).</li><li>Attach the tools to the clinic’s published Voicebot and map each value from the caller’s speech. The API accepts dates such as today/tomorrow and times such as 10 AM; normalize relative dates in the clinic timezone.</li><li>In App Bazaar, connect <b>Greeting → IVR Menu</b>. Set “Press 1 for appointment booking” to the published booking Voicebot applet. Assign the saved app flow to this clinic’s ExoPhone.</li><li>Tell the bot to collect the patient’s name, callback number, date, time and reason, asking for a doctor preference only if the caller has one. Check availability; if no doctor was requested, pass doctor_name as an empty string. Tell the caller the actual doctor_name returned. Repeat all details including that doctor and get clear confirmation before calling book. Read the confirmed booking ID back.</li></ol><details><summary>Tool request bodies</summary><p className="small mt-2 mb-1">Create a <code>carestack_clinic_info</code> tool with this body:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'clinic_info' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_check_availability</code> tool with four string fields: action is the constant availability; map date, time and doctor_name from speech. If no doctor preference was given, send doctor_name as an empty string:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'availability', date: 'aaj', time: '11 baje', doctor_name: '' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_book_appointment</code> tool. Map request_id to a unique ID per call; use the doctor_name returned by availability after telling the caller and getting approval. Set confirmed to true only after the caller approves all details:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'book', request_id: 'unique-call-id', confirmed: true, patient_name: 'patient name', phone_number: '+919876543210', doctor_name: 'doctor name', date: 'YYYY-MM-DD', time: 'HH:mm', reason: 'visit reason' }, null, 2)}</pre></details><p className="small mb-0"><b>Important:</b> Exotel must be able to reach this endpoint over public HTTPS. A localhost URL will not work from an Exotel call. A successful appointment appears immediately in this clinic’s CareStack appointments; booking hours, future dates, duplicate slots and caller confirmation are checked by the API.</p></div></div>}
+                  {voiceToolSecret && <div className="alert alert-info" role="status"><strong>Connect this clinic’s Exotel IVR to CareStack booking</strong><p className="mb-2">This clinic-scoped secret lets the Exotel Voicebot call its CareStack tools. Copy it into the Exotel tool’s <code>x-voice-tool-secret</code> header. If Exotel has no header value field, add POST body parameter tool_secret and set it as a Constant Value in the attached tool, never an LLM prompt. The API validates it for the URL tenant and strips it before processing; use HTTPS.</p><label className="form-label">Exotel reachable API base URL</label><input className="form-control font-monospace mb-2" value={voiceToolApiBaseUrl} onChange={(event) => { const value = event.target.value.trim().replace(/\/+$/, ''); setVoiceToolApiBaseUrl(value); try { localStorage.setItem('carestack-voice-tool-api-base-url', value); } catch {} }} placeholder={API_URL} /><small className="d-block text-muted mb-2">The default uses the configured CareStack API URL. For local testing use <code>http://localhost:3001</code>; Exotel calls require the API service's public HTTPS URL.</small><label className="form-label">Clinic voice tool endpoint</label><input className="form-control font-monospace mb-2" readOnly value={`${voiceToolApiBaseUrl.replace(/\/+$/, '')}/api/voice/tools/${telephonyTenantId}`} onFocus={(event) => event.target.select()} />{/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(voiceToolApiBaseUrl) && <p className="alert alert-warning py-2">Exotel cloud cannot reach localhost. The local endpoint works for testing on this machine; calls from Exotel need a public HTTPS URL.</p>}<label className="form-label">Clinic tool secret</label><input className="form-control font-monospace" readOnly value={voiceToolSecret} onFocus={(event) => event.target.select()} /><div className="mt-3"><strong>Exotel console setup</strong><ol className="mb-2 mt-2"><li>In <b>Build Bot → Tool Integration</b>, create three active POST tools using the endpoint above and JSON request bodies below. Set the clinic secret as a constant x-voice-tool-secret header. If this UI has no header value field, add POST body parameter tool_secret and map it as a Constant Value (never an LLM prompt).</li><li>Attach the tools to the clinic’s published Voicebot and map each value from the caller’s speech. The API accepts dates such as today/tomorrow and times such as 10 AM; normalize relative dates in the clinic timezone.</li><li>In App Bazaar, connect <b>Greeting → IVR Menu</b>. Set “Press 1 for appointment booking” to the published booking Voicebot applet. Assign the saved app flow to this clinic’s ExoPhone.</li><li>Tell the bot to collect the patient’s name, callback number, date, time and optional reason, asking for a doctor preference only if the caller has one. Check availability; if no doctor was requested, pass doctor_name as an empty string. After availability returns, continue the same conversation and preserve details already collected; do not end the turn or restart intake. Tell the caller the exact doctor/date/time returned, ask only for missing required details, read everything back and get clear final confirmation, then immediately call carestack_book_appointment in that conversation. If the caller chooses an alternative slot, check that exact slot again. Never book without confirmation. Read the confirmed booking ID back.</li></ol><details><summary>Tool request bodies</summary><p className="small mt-2 mb-1">Create a <code>carestack_clinic_info</code> tool with this body:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'clinic_info' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_check_availability</code> tool with four string fields: action is the constant availability; map date, time and doctor_name from speech. If no doctor preference was given, send doctor_name as an empty string:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'availability', date: 'aaj', time: '11 baje', doctor_name: '' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_book_appointment</code> tool. Map request_id to a unique ID per call; use the doctor_name returned by availability after telling the caller and getting approval. Set confirmed to true only after the caller approves all details:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'book', request_id: 'unique-call-id', confirmed: true, patient_name: 'patient name', phone_number: '+919876543210', doctor_name: 'doctor name', date: 'YYYY-MM-DD', time: 'HH:mm', reason: 'visit reason' }, null, 2)}</pre></details><p className="small mb-0"><b>Important:</b> Exotel must be able to reach this endpoint over public HTTPS. A localhost URL will not work from an Exotel call. A successful appointment appears immediately in this clinic’s CareStack appointments; booking hours, future dates, duplicate slots and caller confirmation are checked by the API.</p></div></div>}
                   <div className="table-responsive mb-4"><table className="table align-middle">
                     <thead><tr><th>Clinic</th><th>Portal</th><th>Administrator</th><th>Plan</th><th>AI phone</th><th>Subscription</th><th className="text-end">Actions</th></tr></thead>
-                    <tbody>{tenants.length ? tenants.map((tenant) => <tr key={tenant.id}>
+                    <tbody>{tenants.length ? tenantPagination.items.map((tenant) => <tr key={tenant.id}>
                       <td><div className="fw-semibold">{tenant.name}</div><small className="text-muted">{tenant.region}</small></td>
                       <td><a href={getTenantPortalUrl(tenant.domain)}>{getTenantPortalUrl(tenant.domain)}</a></td>
                       <td>{tenant.admin_email}</td>
@@ -1812,6 +1877,7 @@ function App() {
                       <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => configureClinicTelephony(tenant)}>Configure calling</button><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editTenant(tenant)}>Edit</button><button className="btn btn-sm btn-outline-secondary me-2" onClick={() => openTenantPasswordForm(tenant)}>Set password</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'} me-2`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeTenant(tenant)}>Delete</button></td>
                     </tr>) : <tr><td colSpan="6" className="text-muted">No tenants yet.</td></tr>}</tbody>
                   </table></div>
+                  <ListPagination pagination={tenantPagination} label="clinics" />
                   {passwordTenantId && <div id="tenant-password-form" className="border rounded-4 p-3 p-md-4 mb-4 bg-light">
                     <h4 className="mb-1">Set administrator password</h4>
                     <p className="text-muted">{tenants.find((tenant) => tenant.id === passwordTenantId)?.admin_email}. The password is stored as a secure hash in the application database and is not returned by the server.</p>
@@ -1894,7 +1960,8 @@ function App() {
                   </div>
                 </section></div>
                 <div className="col-12"><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Staff accounts</h3><p>{staff.length} receptionist {staff.length === 1 ? 'account' : 'accounts'} for this clinic</p></div></div>
-                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Name</th><th>Login</th><th>Granted access</th><th className="text-end">Actions</th></tr></thead><tbody>{staff.length ? staff.map((member) => <tr key={member.id}><td className="fw-semibold">{member.name}<small className="d-block text-muted">Receptionist</small></td><td>{member.email}</td><td>{member.permissions.length ? member.permissions.map((permission) => permission.split(':').join(' ')).join(' · ') : <span className="text-muted">No sections assigned</span>}</td><td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', permissions: member.permissions || [] }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit access</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan="4" className="text-muted py-4">No staff accounts yet. Add a receptionist above.</td></tr>}</tbody></table></div>
+                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Name</th><th>Login</th><th>Granted access</th><th className="text-end">Actions</th></tr></thead><tbody>{staff.length ? staffPagination.items.map((member) => <tr key={member.id}><td className="fw-semibold">{member.name}<small className="d-block text-muted">Receptionist</small></td><td>{member.email}</td><td>{member.permissions.length ? member.permissions.map((permission) => permission.split(':').join(' ')).join(' · ') : <span className="text-muted">No sections assigned</span>}</td><td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', permissions: member.permissions || [] }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit access</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan="4" className="text-muted py-4">No staff accounts yet. Add a receptionist above.</td></tr>}</tbody></table></div>
+                  <ListPagination pagination={staffPagination} label="staff accounts" />
                 </section></div>
               </div>}
 
@@ -1915,10 +1982,11 @@ function App() {
                 </div></div></div>
                 <div className="col-lg-8"><div className="card border-0 shadow-sm rounded-4 h-100"><div className="card-body">
                   <div className="d-flex justify-content-between align-items-center gap-3 mb-3"><div><h4 className="mb-1">Clinic doctor roster</h4><p className="small text-muted mb-0">{(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').length} active · saved in this clinic database</p></div></div>
-                  {(tenantData?.doctors || []).length ? <div className="list-group list-group-flush">{tenantData.doctors.map((doctor) => <div className="list-group-item px-0 d-flex justify-content-between align-items-center gap-3" key={doctor.id}>
+                  {(tenantData?.doctors || []).length ? <div className="list-group list-group-flush">{doctorPagination.items.map((doctor) => <div className="list-group-item px-0 d-flex justify-content-between align-items-center gap-3" key={doctor.id}>
                     <div><strong>{doctor.name}</strong>{doctor.specialty && <span className="text-muted"> · {doctor.specialty}</span>}<small className="d-block"><span className={`status-pill ${doctor.status === 'active' ? 'confirmed' : 'cancelled'}`}>{doctor.status}</span></small></div>
                     {canManage('doctors') && <div className="d-flex gap-2"><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => editDoctor(doctor)}>Edit</button><button type="button" className={`btn btn-sm ${doctor.status === 'active' ? 'btn-outline-danger' : 'btn-outline-success'}`} onClick={() => toggleDoctorStatus(doctor)}>{doctor.status === 'active' ? 'Deactivate' : 'Reactivate'}</button></div>}
                   </div>)}</div> : <div className="empty-insight">No doctors added yet. Add your clinic’s verified doctors to enable real availability checks and voice bookings.</div>}
+                  <ListPagination pagination={doctorPagination} label="doctors" />
                 </div></div></div>
               </div>}
 
@@ -1980,7 +2048,7 @@ function App() {
                 </section>
                 <div className="row g-4">
                   <div className="col-lg-6"><section className="tenant-insight-panel h-100"><div className="admin-panel-heading"><div><h3>Upcoming schedule</h3><p>Next 7 days by appointment date</p></div></div><div className="report-schedule-list">{analytics.schedule.map((day) => <div key={day.date}><span>{day.label} <small>{day.date.slice(5)}</small></span><strong>{day.count} {day.count === 1 ? 'visit' : 'visits'}</strong></div>)}</div></section></div>
-                  <div className="col-lg-6"><section className="tenant-insight-panel h-100"><div className="admin-panel-heading"><div><h3>Doctor workload</h3><p>Upcoming non-cancelled appointments</p></div></div>{analytics.doctor_workload.length ? analytics.doctor_workload.map((item) => <div className="doctor-row report-doctor-row" key={item.doctor}><span>{item.doctor}</span><div className="admin-bar-track"><span className="doctor-fill" style={{ width: `${(item.count / maxDoctorCount) * 100}%` }} /></div><strong>{item.count}</strong></div>) : <div className="empty-insight">No upcoming appointment workload to report.</div>}</section></div>
+                  <div className="col-lg-6"><section className="tenant-insight-panel h-100"><div className="admin-panel-heading"><div><h3>Doctor workload</h3><p>Upcoming non-cancelled appointments</p></div></div>{analytics.doctor_workload.length ? doctorWorkloadPagination.items.map((item) => <div className="doctor-row report-doctor-row" key={item.doctor}><span>{item.doctor}</span><div className="admin-bar-track"><span className="doctor-fill" style={{ width: `${(item.count / maxDoctorCount) * 100}%` }} /></div><strong>{item.count}</strong></div>) : <div className="empty-insight">No upcoming appointment workload to report.</div>}<ListPagination pagination={doctorWorkloadPagination} label="doctors" /></section></div>
                 </div>
               </div>}
 
@@ -2017,14 +2085,14 @@ function App() {
                       <tbody>
                         {activeView === 'appointments' ? filteredBookings.length === 0 ? (
                           <tr><td colSpan={canManage('appointments') ? 6 : 5} className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
-                        ) : filteredBookings.map((booking) => (
+                        ) : appointmentPagination.items.map((booking) => (
                           <tr key={booking.id}><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td>{canManage('appointments') && <td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></td>}</tr>
                         )) : displayedPatients.length === 0 ? (
                           <tr>
                             <td colSpan={activeView === 'patients' && canManage('patients') ? 6 : 5} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
                           </tr>
                         ) : (
-                          displayedPatients.map((patient) => (
+                          (activeView === 'patients' ? patientPagination.items : displayedPatients).map((patient) => (
                             <tr key={patient.id}>
                               <td>{patient.id}</td>
                               <td>{patient.name}</td>
@@ -2040,6 +2108,8 @@ function App() {
                       </tbody>
                     </table>
                   </div>
+                  {activeView === 'appointments' && <ListPagination pagination={appointmentPagination} label="appointments" />}
+                  {activeView === 'patients' && <ListPagination pagination={patientPagination} label="patients" />}
                   </div>
                 </div>
               </div>}

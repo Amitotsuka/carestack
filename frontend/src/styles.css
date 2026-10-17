@@ -1456,6 +1456,14 @@ button, input {
 .workspace-filter-pills button.active { background: #fff; color: #286c61; box-shadow: 0 1px 4px rgba(35,75,65,.12); font-weight: 700; }
 .workspace-status-filter { width: auto; min-width: 135px; }
 .workspace-result-count { color: #738783; font-size: .73rem; white-space: nowrap; }
+.list-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #eef2f0; color: #738783; font-size: .74rem; }
+.list-pagination-controls, .list-pagination-pages, .list-pagination-size { display: flex; align-items: center; gap: 9px; }
+.list-pagination-size { margin: 0; white-space: nowrap; }
+.list-pagination-size .form-select { width: 76px; min-height: 34px; padding-top: 4px; padding-bottom: 4px; border-color: #dce6e2; border-radius: 8px; font-size: .74rem; }
+.list-pagination-pages { gap: 10px; white-space: nowrap; }
+.list-pagination-pages .btn { border-color: #dce6e2; color: #526c66; }
+.list-pagination-pages .btn:hover:not(:disabled) { border-color: #286c61; background: #286c61; color: #fff; }
+.list-pagination-pages .btn:disabled { opacity: .45; }
 .dashboard-shell .table { --bs-table-bg: transparent; margin: 0; color: #40575b; font-size: .79rem; }
 .dashboard-shell .table thead th { padding: 11px 12px; border-bottom-color: #e5ece9; color: #80918d; font-size: .65rem; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap; }
 .dashboard-shell .table tbody td { padding: 13px 12px; border-bottom-color: #eef2f0; }
@@ -1510,5 +1518,9 @@ button, input {
   .workspace-filter-pills { order: 2; width: 100%; justify-content: space-around; }
   .workspace-status-filter { flex: 1; }
   .workspace-table-tools > .btn { flex: 1; }
+  .list-pagination { align-items: flex-start; }
+  .list-pagination-controls { width: 100%; justify-content: space-between; }
+  .list-pagination-pages { gap: 7px; }
+  .list-pagination-pages .btn { padding-inline: 8px; }
   .dashboard-shell .table thead th, .dashboard-shell .table tbody td { padding-inline: 9px; }
 }

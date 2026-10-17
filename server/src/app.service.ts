@@ -1336,24 +1336,82 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async voiceTool(tenantId: string, payload: any) {
+  private logVoiceToolStage(traceId: string, tenantId: string, action: string, stage: string, details: Record<string, unknown> = {}) {
+    console.info(JSON.stringify({ event: 'voice_tool.stage', trace_id: traceId, tenant_id: tenantId, action, stage, ...details }));
+  }
+
+  private voiceToolFailureCode(message: unknown) {
+    const text = String(message || '').toLowerCase();
+    if (text.includes('missing required booking fields')) return 'missing_required_booking_fields';
+    if (text.includes('caller confirmation')) return 'caller_confirmation_missing';
+    if (text.includes('request_id')) return 'invalid_request_id';
+    if (text.includes('patient_name')) return 'invalid_patient_name';
+    if (text.includes('phone_number')) return 'invalid_phone_number';
+    if ((text.includes('doctor_name') && (text.includes('match') || text.includes('configured') || text.includes('clinic doctor list'))) || text.includes('not in the clinic doctor list')) return 'doctor_not_configured';
+    if (text.includes('overlap') || text.includes('conflict') || text.includes('already booked')) return 'slot_conflict';
+    if (text.includes('time has passed')) return 'requested_time_in_past';
+    if (text.includes('storage') || text.includes('persist')) return 'booking_storage_failure';
+    if (text.includes('no doctors are configured') || text.includes('no doctor')) return 'doctor_availability_unavailable';
+    if (text.includes('hours') || text.includes('currently disabled') || text.includes('booking is currently unavailable') || text.includes('finish by')) return 'booking_policy_rejected';
+    if (text.includes('date') || text.includes('time')) return 'invalid_date_or_time';
+    if (text.includes('clinic not found')) return 'clinic_not_found';
+    return 'tool_validation_rejected';
+  }
+
+  private voiceToolResultDetails(action: string, result: any): Record<string, unknown> {
+    if (result && typeof result === 'object' && 'error' in result) {
+      const missingFields = /^Missing required booking fields:\s*([a-z_, ]+)\.?$/i.exec(String(result.error));
+      return {
+        outcome: result.unavailable ? 'dependency_unavailable' : 'rejected',
+        reason_code: this.voiceToolFailureCode(result.error),
+        ...(missingFields ? { missing_fields: missingFields[1].split(',').map((field) => field.trim()).filter(Boolean) } : {}),
+      };
+    }
+    if (action === 'availability') {
+      const checked = result?.check_status === 'checked';
+      return {
+        outcome: checked ? 'success' : result?.check_status === 'error' ? 'not_checked' : result?.available === false ? 'rejected' : 'success',
+        availability: checked ? (result.available ? 'available' : 'unavailable') : 'not_checked',
+        ...(!checked && result?.message ? { reason_code: this.voiceToolFailureCode(result.message) } : {}),
+        available_doctor_count: Array.isArray(result?.available_doctors) ? result.available_doctors.length : 0,
+        alternative_slot_count: Array.isArray(result?.available_slots) ? result.available_slots.length : 0,
+      };
+    }
+    if (action === 'book') {
+      if (result?.appointment) {
+        return { outcome: 'success', appointment_id_present: Boolean(result.appointment.id), idempotent_replay: result.idempotent_replay === true };
+      }
+      if (result?.confirmation_required === true) return { outcome: 'confirmation_required', reason_code: 'doctor_confirmation_required' };
+      if (result?.booked === false) return { outcome: 'not_booked', reason_code: 'booking_not_created' };
+    }
+    return { outcome: 'success' };
+  }
+
+  async voiceTool(tenantId: string, payload: any, traceId = randomUUID()) {
     const started = performance.now();
     const actionValue = String(payload?.action || '').trim().toLowerCase();
     const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
     let outcome = 'success';
+    let reasonCode: string | undefined;
+    this.logVoiceToolStage(traceId, tenantId, action, 'action_started');
     try {
-      const result = await this.dispatchVoiceTool(tenantId, payload);
-      if (result && typeof result === 'object' && 'error' in result) outcome = (result as any).unavailable ? 'dependency_unavailable' : 'rejected';
+      const result = await this.dispatchVoiceTool(tenantId, payload, traceId);
+      const details = this.voiceToolResultDetails(action, result);
+      outcome = String(details.outcome || 'success');
+      reasonCode = typeof details.reason_code === 'string' ? details.reason_code : undefined;
+      this.logVoiceToolStage(traceId, tenantId, action, 'action_result', details);
       return result;
     } catch (error) {
       outcome = 'error';
+      reasonCode = 'unexpected_exception';
+      this.logVoiceToolStage(traceId, tenantId, action, 'action_exception', { outcome, reason_code: reasonCode });
       throw error;
     } finally {
-      console.info(JSON.stringify({ event: 'voice_tool.service_timing', tenant_id: tenantId, action, duration_ms: Number((performance.now() - started).toFixed(2)), outcome }));
+      console.info(JSON.stringify({ event: 'voice_tool.service_timing', trace_id: traceId, tenant_id: tenantId, action, duration_ms: Number((performance.now() - started).toFixed(2)), outcome, ...(reasonCode ? { reason_code: reasonCode } : {}) }));
     }
   }
 
-  private async dispatchVoiceTool(tenantId: string, payload: any) {
+  private async dispatchVoiceTool(tenantId: string, payload: any, traceId: string) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return { error: 'Clinic not found.' };
     const action = String(payload?.action ?? '').trim().toLowerCase();
@@ -1370,7 +1428,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         doctor_directory: this.getActiveClinicDoctorDirectory(tenantId),
         doctor_list_source: 'clinic database roster',
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
-        response_policy: 'Only values returned here are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. patient_name is the name the appointment is booked under and may differ from the caller. Use only the exact name the caller stated and confirmed; never invent, complete, translate, normalize, or substitute a sample, placeholder, or another caller name. If unclear, ask the caller to repeat or spell it. Never invent a patient phone number or use the clinic phone number for the patient. Use incoming caller ID only when Exotel explicitly exposes it to the agent as verified call context, and ask the caller to confirm it; otherwise ask the caller for a reachable number and repeat it back. Offer a human receptionist for other clinic questions.',
+        response_policy: 'Only live CareStack tool results are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. Keep the caller’s current appointment request and already collected answers in context across every tool call. An availability result is an intermediate step: do not end the conversation or restart intake after it. If available, tell the caller the exact doctor, date, and time returned, ask only for booking details that are still missing, then read back the patient name, reachable confirmed phone, doctor, date, and time together and get clear final confirmation. After that confirmation, immediately call carestack_book_appointment in the same conversation with action=book, confirmed=true, and the exact confirmed details. Never call book before final confirmation. If the caller chooses an alternative slot, check that exact slot with availability before booking. If availability was not checked or returned available=null, do not book. The patient name may differ from the caller: use only the exact name the caller stated; never invent, complete, translate, normalize, or substitute it. If unclear, ask the caller to repeat or spell it. Never invent a patient phone number or use the clinic phone number for the patient. Use incoming caller ID only when Exotel explicitly exposes it as verified call context and the caller confirms it; otherwise ask for a reachable number and repeat it back. Ask for an optional visit reason only if it is missing; omit it if the caller declines. Offer a human receptionist for other clinic questions.',
       };
     }
     if (action === 'faq') {
@@ -1434,6 +1492,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         }
         availableSlots.sort((left, right) => Math.abs((this.timeToMinutes(left.time) ?? 0) - requestedStart) - Math.abs((this.timeToMinutes(right.time) ?? 0) - requestedStart));
       }
+      this.logVoiceToolStage(traceId, tenantId, action, 'availability_checked', {
+        outcome: selected ? 'available' : 'unavailable',
+        available_doctor_count: matches.filter((candidate) => !candidate.conflict).length,
+        alternative_slot_count: availableSlots.length,
+      });
       return {
         check_status: 'checked', available: Boolean(selected), date, time, duration_minutes: this.appointmentDuration(tenantId),
         ...(selected ? { doctor_name: selected.doctor_name } : { doctor_name: doctor || undefined }),
@@ -1441,10 +1504,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         ...(availableSlots.length ? { available_slots: availableSlots } : {}),
         source: 'portal appointment calendar',
         message: selected
-          ? `The requested time is available with ${selected.doctor_name}. Tell the caller which doctor is available and get confirmation before booking.`
+          ? `Availability was checked and this slot is available with ${selected.doctor_name}. This is an intermediate step: continue this same conversation and keep already collected appointment details in context; do not end the turn or restart intake. Tell the caller the exact doctor, date, and time. Ask only for required booking details still missing, then read back the patient name, reachable confirmed phone, doctor, date, and time together and ask for clear final confirmation. Once the caller confirms, immediately call carestack_book_appointment with action=book, confirmed=true, and these exact confirmed details. Do not call book before that final confirmation.`
           : doctor && matches[0].conflict
-            ? this.scheduleConflictMessage(tenantId, matches[0].conflict)
-            : 'No configured doctor is free at that time. Offer one of the returned available_slots, if any, or ask the caller for another time.',
+            ? `${this.scheduleConflictMessage(tenantId, matches[0].conflict)} Continue the same appointment conversation and offer only the returned available_slots. If the caller selects an alternative, check that exact slot again before final confirmation and booking.`
+            : 'No configured doctor is free at that time. Offer one of the returned available_slots, if any, or ask the caller for another time. Keep the same appointment conversation; if the caller selects an alternative, check that exact slot again before final confirmation and booking.',
       };
     }
     if (action === 'book') {
@@ -1470,6 +1533,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       const prior = tenant.bookings.find((booking) => booking.id === id);
       if (prior) {
         await this.waitForPendingPersistence();
+        this.logVoiceToolStage(traceId, tenantId, action, 'booking_persistence', { outcome: 'idempotent_replay', appointment_id_present: Boolean(prior.id) });
         return { appointment: prior, idempotent_replay: true };
       }
       const policy = this.validateAgentBooking(tenantId, time);
@@ -1495,13 +1559,23 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       if (conflict) return { error: this.scheduleConflictMessage(tenantId, conflict) };
       const appointment: Booking = { id, patient_name: patientName, phone_number: phone, doctor_name: assignedDoctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason, status: 'confirmed' };
       let saved: Booking | { error: string } | null;
+      this.logVoiceToolStage(traceId, tenantId, action, 'booking_persistence_started');
       try {
         saved = await this.addBooking(tenantId, appointment);
       } catch {
+        this.logVoiceToolStage(traceId, tenantId, action, 'booking_persistence', { outcome: 'failed', reason_code: 'booking_storage_failure' });
         return { error: 'Appointment storage is temporarily unavailable; booking was not confirmed.', unavailable: true };
       }
-      if (!saved || 'error' in saved) return { error: saved && 'error' in saved ? saved.error : 'Could not save appointment.' };
-      if (!saved.id) return { error: 'Appointment persistence did not return an appointment ID.' };
+      if (!saved || 'error' in saved) {
+        const reason = saved && 'error' in saved ? this.voiceToolFailureCode(saved.error) : 'booking_storage_failure';
+        this.logVoiceToolStage(traceId, tenantId, action, 'booking_persistence', { outcome: 'failed', reason_code: reason });
+        return { error: saved && 'error' in saved ? saved.error : 'Could not save appointment.' };
+      }
+      if (!saved.id) {
+        this.logVoiceToolStage(traceId, tenantId, action, 'booking_persistence', { outcome: 'failed', reason_code: 'appointment_id_missing' });
+        return { error: 'Appointment persistence did not return an appointment ID.' };
+      }
+      this.logVoiceToolStage(traceId, tenantId, action, 'booking_persistence', { outcome: 'success', appointment_id_present: true });
       return { appointment: saved, idempotent_replay: false };
     }
     if (action === 'cancel' || action === 'reschedule') return { error: 'This appointment change is not enabled: patient verification and an authoritative scheduling integration are not configured. Offer a human receptionist.' };
