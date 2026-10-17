@@ -30,6 +30,8 @@ class AppService {
         this.superAdminAvatarDataUrl = null;
         this.superAdminPhone = '';
         this.superAdminEmployeeId = '';
+        this.superAdminPasswordResetCodeHash = null;
+        this.superAdminPasswordResetExpiresAt = null;
         this.planCatalog = [
             { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3 },
             { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
@@ -135,6 +137,8 @@ class AppService {
             this.superAdminPasswordHash = state.superAdminProfile.password_hash || this.superAdminPasswordHash;
             this.superAdminPhone = state.superAdminProfile.phone || '';
             this.superAdminEmployeeId = state.superAdminProfile.employee_id || this.superAdminEmployeeId;
+            this.superAdminPasswordResetCodeHash = state.superAdminProfile.password_reset_code_hash || null;
+            this.superAdminPasswordResetExpiresAt = state.superAdminProfile.password_reset_expires_at || null;
         }
         let migrated = this.migratePasswordHashes();
         if (!state.superAdminProfile || !state.superAdminProfile.employee_id || state.superAdminProfile.phone === undefined)
@@ -245,6 +249,8 @@ class AppService {
                 password_hash: this.superAdminPasswordHash,
                 phone: this.superAdminPhone,
                 employee_id: this.superAdminEmployeeId,
+                password_reset_code_hash: this.superAdminPasswordResetCodeHash,
+                password_reset_expires_at: this.superAdminPasswordResetExpiresAt,
             },
         });
     }
@@ -440,6 +446,7 @@ class AppService {
             billing_cycle: tenant.billing_cycle,
             monthly_price: this.monthlyRevenueFor(tenant),
             region: tenant.region,
+            logo_configured: Boolean(tenant.logo_data_url),
             patient_count: tenant.patients.length,
             booking_count: tenant.bookings.length,
             telephony: this.publicTelephony(tenant.telephony),
@@ -454,7 +461,26 @@ class AppService {
             id: tenant.id,
             name: tenant.name,
             domain: tenant.domain,
+            logo_data_url: tenant.logo_data_url || null,
             subscription_status: tenant.subscription_status,
+        };
+    }
+    getTenantDetails(tenantId) {
+        const tenant = this.tenants[tenantId];
+        if (!tenant)
+            return null;
+        return {
+            id: tenant.id,
+            name: tenant.name,
+            domain: tenant.domain,
+            logo_data_url: tenant.logo_data_url || null,
+            admin_name: tenant.admin_name,
+            admin_email: tenant.admin_email,
+            admin_phone: tenant.admin_phone,
+            plan: tenant.plan,
+            subscription_status: tenant.subscription_status,
+            billing_cycle: tenant.billing_cycle,
+            region: tenant.region,
         };
     }
     isTenantActive(tenantId) {
@@ -564,6 +590,7 @@ class AppService {
             id: tenantId,
             name: payload.tenant_name,
             domain: tenantDomain,
+            logo_data_url: payload.logo_data_url || null,
             admin_name: payload.admin_name,
             admin_email: adminEmail,
             admin_phone: payload.admin_phone,
@@ -627,6 +654,8 @@ class AppService {
             tenant.name = String(payload.tenant_name).trim();
         if (payload.tenant_domain !== undefined)
             tenant.domain = nextDomain;
+        if (payload.logo_data_url !== undefined)
+            tenant.logo_data_url = payload.logo_data_url || null;
         if (payload.admin_name !== undefined)
             tenant.admin_name = String(payload.admin_name).trim();
         if (payload.admin_email !== undefined)
@@ -676,6 +705,8 @@ class AppService {
             if (!currentPassword || !await bcryptjs_1.default.compare(currentPassword, this.superAdminPasswordHash))
                 return 'current_password_invalid';
             this.superAdminPasswordHash = bcryptjs_1.default.hashSync(password, 12);
+            this.superAdminPasswordResetCodeHash = null;
+            this.superAdminPasswordResetExpiresAt = null;
             this.persistState();
             await this.pendingPostgresWrite;
             return 'updated';
@@ -780,9 +811,18 @@ class AppService {
     async requestPasswordReset(email) {
         this.assertEmailConfigured();
         const normalizedEmail = email.trim().toLowerCase();
-        const tenant = Object.values(this.tenants).find((item) => item.users.some((user) => user.email.toLowerCase() === normalizedEmail));
-        const user = tenant?.users.find((item) => item.email.toLowerCase() === normalizedEmail);
-        if (tenant && user) {
+        if (normalizedEmail === this.superAdminEmail) {
+            const code = String((0, node_crypto_1.randomInt)(0, 1000000)).padStart(6, '0');
+            this.superAdminPasswordResetCodeHash = (0, node_crypto_1.createHash)('sha256').update(code).digest('hex');
+            this.superAdminPasswordResetExpiresAt = Date.now() + 15 * 60 * 1000;
+            this.persistState();
+            await this.pendingPostgresWrite;
+            await this.sendEmail(this.superAdminEmail, 'Your CareStack platform password reset code', `Hello ${this.superAdminName},\n\nYour platform administrator password reset code is: ${code}\n\nIt expires in 15 minutes. If you did not request this code, you can ignore this email.`);
+            return { message: 'If an account matches that email, a password reset code has been sent.' };
+        }
+        const user = Object.values(this.tenants).flatMap((item) => item.users)
+            .find((item) => item.email.toLowerCase() === normalizedEmail);
+        if (user) {
             const code = String((0, node_crypto_1.randomInt)(0, 1000000)).padStart(6, '0');
             user.password_reset_code_hash = (0, node_crypto_1.createHash)('sha256').update(code).digest('hex');
             user.password_reset_expires_at = Date.now() + 15 * 60 * 1000;
@@ -794,6 +834,20 @@ class AppService {
     }
     async resetPassword(email, code, password) {
         const normalizedEmail = email.trim().toLowerCase();
+        if (normalizedEmail === this.superAdminEmail) {
+            if (!this.superAdminPasswordResetCodeHash || !this.superAdminPasswordResetExpiresAt || this.superAdminPasswordResetExpiresAt < Date.now())
+                return false;
+            const suppliedHash = (0, node_crypto_1.createHash)('sha256').update(code).digest();
+            const savedHash = Buffer.from(this.superAdminPasswordResetCodeHash, 'hex');
+            if (savedHash.length !== suppliedHash.length || !(0, node_crypto_1.timingSafeEqual)(savedHash, suppliedHash))
+                return false;
+            this.superAdminPasswordHash = bcryptjs_1.default.hashSync(password, 12);
+            this.superAdminPasswordResetCodeHash = null;
+            this.superAdminPasswordResetExpiresAt = null;
+            this.persistState();
+            await this.pendingPostgresWrite;
+            return true;
+        }
         const user = Object.values(this.tenants).flatMap((item) => item.users)
             .find((item) => item.email.toLowerCase() === normalizedEmail);
         if (!user?.password_reset_code_hash || !user.password_reset_expires_at || user.password_reset_expires_at < Date.now())

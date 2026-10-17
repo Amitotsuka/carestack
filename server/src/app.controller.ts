@@ -89,6 +89,10 @@ class TenantOnboardDto {
   @IsString()
   region: string;
 
+  @IsOptional() @IsString() @MaxLength(700000)
+  @Matches(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/)
+  logo_data_url?: string | null;
+
   @IsOptional() @IsString() @MinLength(10) @IsByteLength(10, 72)
   admin_password?: string;
 
@@ -102,6 +106,9 @@ class TenantUpdateDto {
   tenant_name?: string;
   @IsOptional() @IsString() @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
   tenant_domain?: string;
+  @IsOptional() @IsString() @MaxLength(700000)
+  @Matches(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/)
+  logo_data_url?: string | null;
   @IsOptional() @IsString() @MinLength(2)
   admin_name?: string;
   @IsOptional() @IsEmail()
@@ -411,6 +418,15 @@ export class AppController {
   @Roles('super_admin')
   listTenants() {
     return { tenants: this.appService.listTenants() };
+  }
+
+  @Get('api/tenants/:tenantId')
+  @UseGuards(AccessGuard)
+  @Roles('super_admin')
+  getTenantDetails(@Param('tenantId') tenantId: string) {
+    const tenant = this.appService.getTenantDetails(tenantId);
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    return { tenant };
   }
 
   @Get('api/plans')

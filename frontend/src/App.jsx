@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import carestackMark from './carestack-mark.svg';
 
 const PUBLIC_APP_URL = 'https://carestack-uat-web.onrender.com';
 const PUBLIC_API_URL = 'https://carestack-6psq.onrender.com';
@@ -9,7 +10,7 @@ const API_URL = import.meta.env.VITE_API_URL || (
 );
 const emptyPatient = { name: '', phone: '', email: '', age: '', notes: '', status: 'active' };
 const emptyBooking = { patient_name: '', phone_number: '', doctor_name: '', appointment_date: '', appointment_time: '', reason: 'General consultation' };
-const emptyTenant = { tenant_name: '', tenant_domain: '', admin_name: '', admin_email: '', admin_phone: '', plan: 'growth', billing_cycle: 'monthly', subscription_status: 'active', region: 'India' };
+const emptyTenant = { tenant_name: '', tenant_domain: '', logo_data_url: '', admin_name: '', admin_email: '', admin_phone: '', plan: 'growth', billing_cycle: 'monthly', subscription_status: 'active', region: 'India' };
 const emptyPlan = { id: '', name: '', monthly_price: '', annual_price: '', clinic_limit: '', user_limit: '' };
 const defaultVoiceAgent = { enabled: true, availability: 'business_hours', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', appointment_duration_minutes: 30, clinic_context: { address: '', services: [], doctors: [], fees: '', languages: ['Hindi', 'Hinglish', 'English'], instructions: '', faqs: [] } };
 const emptyTelephony = { phone_number: '', account_sid: '', app_id: '', region: 'mumbai', enabled: false, exotel_api_key: '', exotel_api_token: '', sarvam_org_id: '', sarvam_workspace_id: '', sarvam_agent_id: '', sarvam_agent_version: '', sarvam_connection_id: '' };
@@ -136,6 +137,7 @@ const getTenantBrand = () => {
       hostname: 'localhost',
       accent: '#2a6df3',
       tagline: 'Multi-clinic operations platform',
+      logoDataUrl: '',
     };
   }
 
@@ -182,7 +184,7 @@ const getTenantBrand = () => {
     tagline: 'Connected care operations',
   };
 
-  return mapped;
+  return { ...mapped, logoDataUrl: '' };
 };
 
 function App() {
@@ -212,6 +214,8 @@ function App() {
   const [profileNewPassword, setProfileNewPassword] = useState('');
   const [profilePasswordConfirm, setProfilePasswordConfirm] = useState('');
   const [profilePasswordOpen, setProfilePasswordOpen] = useState(false);
+  const [profilePasswordResetOpen, setProfilePasswordResetOpen] = useState(false);
+  const [profilePasswordResetCode, setProfilePasswordResetCode] = useState('');
   const [profileNotice, setProfileNotice] = useState('');
   const [profileError, setProfileError] = useState('');
   const [profileBusy, setProfileBusy] = useState(false);
@@ -245,6 +249,7 @@ function App() {
   const [bookingFormOpen, setBookingFormOpen] = useState(false);
   const [appointmentRegisterOpen, setAppointmentRegisterOpen] = useState(true);
   const [tenantForm, setTenantForm] = useState(emptyTenant);
+  const [tenantLogoError, setTenantLogoError] = useState('');
   const [appointmentQuery, setAppointmentQuery] = useState('');
   const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
   const [appointmentDateFilter, setAppointmentDateFilter] = useState('all');
@@ -397,7 +402,7 @@ function App() {
   useEffect(() => {
     request(`/api/tenant/resolve/${encodeURIComponent(tenantBrand.domain)}`).then((tenant) => {
       if (tenant) {
-        setTenantBrand((current) => ({ ...current, name: tenant.name, shortName: tenant.name.split(' ')[0] }));
+        setTenantBrand((current) => ({ ...current, name: tenant.name, shortName: tenant.name.split(' ')[0], logoDataUrl: tenant.logo_data_url || '' }));
       }
     }).catch(() => {});
   }, [tenantBrand.domain]);
@@ -863,7 +868,7 @@ function App() {
     try {
       const data = await request(editingTenantId ? `/api/tenants/${editingTenantId}` : '/api/tenants/onboard', {
         method: editingTenantId ? 'PUT' : 'POST',
-        body: JSON.stringify(tenantForm),
+        body: JSON.stringify({ ...tenantForm, logo_data_url: tenantForm.logo_data_url || null }),
       });
       if (isChangingTenantPassword) {
         await request(`/api/tenants/${editingTenantId}/password`, {
@@ -875,6 +880,7 @@ function App() {
         ? `${data.tenant.name} was updated${isChangingTenantPassword ? ' and its administrator password was changed' : ''}.`
         : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. A one-time password was emailed to ${data.tenant.admin_email}; it expires in 24 hours and must be changed at first sign-in.`);
       setTenantForm(emptyTenant);
+      setTenantLogoError('');
       setEditingTenantPassword('');
       setEditingTenantPasswordConfirm('');
       setEditingTenantId(null);
@@ -886,7 +892,7 @@ function App() {
     }
   };
 
-  const editTenant = (tenant) => {
+  const editTenant = async (tenant) => {
     setEditingTenantId(tenant.id);
     setTenantManagementFormOpen(true);
     setPasswordTenantId(null);
@@ -894,9 +900,11 @@ function App() {
     setTenantPasswordConfirm('');
     setEditingTenantPassword('');
     setEditingTenantPasswordConfirm('');
+    setTenantLogoError('');
     setTenantForm({
       tenant_name: tenant.name,
       tenant_domain: tenant.domain,
+      logo_data_url: '',
       admin_name: tenant.admin_name,
       admin_email: tenant.admin_email,
       admin_phone: tenant.admin_phone || '',
@@ -908,6 +916,15 @@ function App() {
     setNotice('');
     setError('');
     document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth' });
+    setBusy(true);
+    try {
+      const result = await request(`/api/tenants/${tenant.id}`);
+      setTenantForm((current) => ({ ...current, logo_data_url: result.tenant.logo_data_url || '' }));
+    } catch (loadError) {
+      setError(loadError.message || 'Clinic details could not be loaded.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const openTenantPasswordForm = (tenant) => {
@@ -1221,6 +1238,8 @@ function App() {
     setProfileNewPassword('');
     setProfilePasswordConfirm('');
     setProfilePasswordOpen(false);
+    setProfilePasswordResetOpen(false);
+    setProfilePasswordResetCode('');
     setProfileNotice('');
     setProfileError('');
     setProfileDialogOpen(true);
@@ -1262,6 +1281,27 @@ function App() {
     };
     reader.onerror = () => { setProfileError('The selected image could not be opened.'); setProfileNotice(''); };
     reader.readAsDataURL(file);
+  };
+
+  const handleTenantLogoChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setTenantLogoError('Choose a PNG, JPG, or WebP image.');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > 500 * 1024) {
+      setTenantLogoError('Choose an image smaller than 500 KB.');
+      event.target.value = '';
+      return;
+    }
+    setTenantLogoError('');
+    const reader = new FileReader();
+    reader.onload = () => setTenantForm((current) => ({ ...current, logo_data_url: String(reader.result || '') }));
+    reader.onerror = () => setTenantLogoError('The selected image could not be read.');
+    reader.readAsDataURL(file);
+    event.target.value = '';
   };
 
   const saveOwnProfile = async (event) => {
@@ -1308,9 +1348,63 @@ function App() {
       setProfileCurrentPassword('');
       setProfileNewPassword('');
       setProfilePasswordConfirm('');
+      setProfilePasswordResetCode('');
+      setProfilePasswordResetOpen(false);
       setProfileNotice(result.message || 'Password updated successfully.');
     } catch (passwordError) {
       setProfileError(passwordError.message || 'Your password could not be updated.');
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const requestProfilePasswordReset = async () => {
+    setProfileError('');
+    setProfileNotice('');
+    if (!session?.email) {
+      setProfileError('Your account email is unavailable. Sign in again and retry.');
+      return;
+    }
+    setProfileBusy(true);
+    try {
+      const result = await request('/api/auth/password-reset/request', {
+        method: 'POST', body: JSON.stringify({ email: session.email }),
+      });
+      setProfilePasswordResetCode('');
+      setProfilePasswordResetOpen(true);
+      setProfileNotice(result.message || 'If an account matches that email, a reset code has been sent.');
+    } catch (resetError) {
+      setProfileError(resetError.message || 'A password reset code could not be sent.');
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const confirmProfilePasswordReset = async (event) => {
+    event.preventDefault();
+    setProfileError('');
+    setProfileNotice('');
+    if (!session?.email) {
+      setProfileError('Your account email is unavailable. Sign in again and retry.');
+      return;
+    }
+    if (profileNewPassword !== profilePasswordConfirm) {
+      setProfileError('The new passwords do not match.');
+      return;
+    }
+    setProfileBusy(true);
+    try {
+      const result = await request('/api/auth/password-reset/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ email: session.email, code: profilePasswordResetCode, password: profileNewPassword }),
+      });
+      setProfilePasswordResetCode('');
+      setProfileNewPassword('');
+      setProfilePasswordConfirm('');
+      setProfilePasswordResetOpen(false);
+      setProfileNotice(result.message || 'Password updated successfully.');
+    } catch (resetError) {
+      setProfileError(resetError.message || 'The password reset code could not be verified.');
     } finally {
       setProfileBusy(false);
     }
@@ -1613,9 +1707,9 @@ function App() {
       {loginOpen && <div className="login-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLoginOpen(false); }}>
         <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-heading">
           <button className="login-close" aria-label="Close sign in" onClick={() => setLoginOpen(false)}>×</button>
-          <p className="section-kicker">CARESTACK ACCESS</p>
+          <div className="login-brand"><span className="login-brand-mark">{loginRole === 'tenant' ? (tenantBrand.logoDataUrl ? <img src={tenantBrand.logoDataUrl} alt={`${tenantBrand.name} logo`} /> : String(tenantBrand.shortName || tenantBrand.name || 'C').charAt(0).toUpperCase()) : <img src={carestackMark} alt="CareStack platform logo" />}</span></div>
           <h2 id="login-heading">{loginMode === 'login' ? 'Welcome back.' : loginMode === 'forgot' ? 'Reset your password.' : loginMode === 'reset' ? 'Choose a new password.' : 'Secure your account.'}</h2>
-          <p className="login-subtitle">{loginMode === 'login' ? 'Choose your workspace to continue.' : loginMode === 'forgot' ? 'We’ll email a short reset code if this account exists.' : loginMode === 'reset' ? 'Enter the code sent to your clinic email.' : 'Your one-time password has been used. Set a new password to continue.'}</p>
+          <p className="login-subtitle">{loginMode === 'login' ? 'Choose your workspace to continue.' : loginMode === 'forgot' ? 'We’ll email a short reset code if this account exists.' : loginMode === 'reset' ? 'Enter the code sent to your account email.' : 'Your one-time password has been used. Set a new password to continue.'}</p>
           {loginMode === 'login' && <>
             <div className="login-role-switch" role="tablist" aria-label="Choose sign-in type"><button role="tab" aria-selected={loginRole === 'tenant'} className={loginRole === 'tenant' ? 'selected' : ''} onClick={() => openLogin('tenant')}>Clinic admin or staff</button><button role="tab" aria-selected={loginRole === 'super_admin'} className={loginRole === 'super_admin' ? 'selected' : ''} onClick={() => openLogin('super_admin')}>Platform admin</button></div>
             <div className="login-clinic-label"><span>{loginRole === 'tenant' ? 'CLINIC WORKSPACE' : 'PLATFORM CONTROL'}</span><strong>{loginRole === 'tenant' ? tenantBrand.name : 'CareStack platform'}</strong>{loginRole === 'tenant' && <small>{tenantBrand.domain}</small>}</div>
@@ -1626,11 +1720,10 @@ function App() {
               {loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
               <button className="button-dark login-submit" disabled={busy}>{busy ? 'Signing in…' : loginRole === 'tenant' ? 'Open clinic workspace' : 'Open platform console'} <span aria-hidden="true">→</span></button>
             </form>
-            {loginRole === 'tenant' && <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); setLoginStatus(''); }}>Forgot password?</button>}
-            {import.meta.env.DEV && <p className="login-demo-note">Local demo: {loginRole === 'tenant' ? `admin@${tenantBrand.domain}.in` : 'superadmin@hospital.ai'} / admin123</p>}
+            <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); setLoginStatus(''); }}>Forgot password?</button>
           </>}
           {loginMode === 'forgot' && <form onSubmit={submitPasswordResetRequest}>
-            <label htmlFor="reset-email">Clinic account email</label><input id="reset-email" type="email" autoComplete="email" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
+            <label htmlFor="reset-email">Account email</label><input id="reset-email" type="email" autoComplete="email" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
             {error && <div className="login-error" role="alert">{error}</div>}{loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
             <button className="button-dark login-submit" disabled={busy}>{busy ? 'Sending code…' : 'Email reset code'} <span aria-hidden="true">→</span></button>
             <button type="button" className="login-text-button" onClick={() => { setLoginMode('login'); setError(''); setLoginStatus(''); }}>Back to sign in</button>
@@ -1663,7 +1756,7 @@ function App() {
             <div className="card shadow-lg border-0 rounded-4">
               <div className="card-body p-4 p-lg-5">
                 <div className="text-center mb-4">
-                  <div className="auth-logo" style={{ background: `${tenantBrand.accent}1a`, color: tenantBrand.accent }}>{tenantBrand.shortName.charAt(0)}</div>
+                  <div className={`auth-logo ${tenantBrand.logoDataUrl ? 'auth-logo-image' : ''}`} style={{ background: `${tenantBrand.accent}1a`, color: tenantBrand.accent }}>{tenantBrand.logoDataUrl ? <img src={tenantBrand.logoDataUrl} alt={`${tenantBrand.name} logo`} /> : tenantBrand.shortName.charAt(0)}</div>
                   <h2 className="fw-bold mt-3">{tenantBrand.name}</h2>
                   <p className="text-muted mb-0">Tenant admin / super admin access · {tenantBrand.hostname}</p>
                 </div>
@@ -1673,10 +1766,10 @@ function App() {
                   <div className="mb-3"><label className="form-label">Password or one-time password</label><input type="password" className="form-control form-control-lg" required value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} /></div>
                   {error && <div className="alert alert-danger">{error}</div>}{loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
                   <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-                  {loginRole === 'tenant' && <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); setLoginStatus(''); }}>Forgot password?</button>}
+                  <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); setLoginStatus(''); }}>Forgot password?</button>
                 </form>}
                 {loginMode === 'forgot' && <form onSubmit={submitPasswordResetRequest}>
-                  <div className="mb-3"><label className="form-label">Clinic account email</label><input type="email" className="form-control form-control-lg" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} /></div>
+                  <div className="mb-3"><label className="form-label">Account email</label><input type="email" className="form-control form-control-lg" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} /></div>
                   {error && <div className="alert alert-danger">{error}</div>}{loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
                   <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Sending code…' : 'Email reset code'}</button><button type="button" className="login-text-button" onClick={() => setLoginMode('login')}>Back to sign in</button>
                 </form>}
@@ -1696,9 +1789,6 @@ function App() {
                   <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Securing account…' : 'Set password and continue'}</button>
                 </form>}
 
-                {import.meta.env.DEV && <div className="mt-4 text-muted small bg-light rounded-3 p-3">
-                  Tenant demo: admin@skycare.in / admin123<br />Super admin: superadmin@hospital.ai / admin123
-                </div>}
               </div>
             </div>
           </div>
@@ -1923,6 +2013,7 @@ function App() {
                     <div className="row g-3">
                       <div className="col-md-6"><label className="form-label" htmlFor="tenant-name">Clinic name</label><input id="tenant-name" className="form-control" required minLength="2" value={tenantForm.tenant_name} onChange={(event) => setTenantForm({ ...tenantForm, tenant_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="tenant-domain">Tenant slug</label><div className="input-group"><input id="tenant-domain" className="form-control" pattern="[a-z0-9]+(-[a-z0-9]+)*" required minLength="2" value={tenantForm.tenant_domain} onChange={(event) => setTenantForm({ ...tenantForm, tenant_domain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /><span className="input-group-text">slug</span></div><small className="text-muted">Used to identify this clinic in the shared sign-in portal.</small></div>
+                      <div className="col-12"><div className="clinic-logo-editor"><div className="clinic-logo-preview">{tenantForm.logo_data_url ? <img src={tenantForm.logo_data_url} alt="Clinic logo preview" /> : <span>{String(tenantForm.tenant_name || 'C').charAt(0).toUpperCase()}</span>}</div><div className="clinic-logo-controls"><label className="form-label mb-1">Clinic logo</label><small className="d-block text-muted mb-2">Shown at the top of this clinic’s login screen. PNG, JPG, or WebP · up to 500 KB.</small><div className="d-flex align-items-center gap-3"><label className="btn btn-outline-primary btn-sm mb-0">{tenantForm.logo_data_url ? 'Replace logo' : 'Upload logo'}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleTenantLogoChange} hidden /></label>{tenantForm.logo_data_url && <button type="button" className="btn btn-link btn-sm text-danger p-0" onClick={() => { setTenantForm((current) => ({ ...current, logo_data_url: '' })); setTenantLogoError(''); }}>Remove logo</button>}</div>{tenantLogoError && <small className="d-block text-danger mt-2" role="alert">{tenantLogoError}</small>}</div></div></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-name">Admin name</label><input id="admin-name" className="form-control" required value={tenantForm.admin_name} onChange={(event) => setTenantForm({ ...tenantForm, admin_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>
@@ -1933,7 +2024,7 @@ function App() {
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-region">Region</label><input id="tenant-region" className="form-control" required value={tenantForm.region} onChange={(event) => setTenantForm({ ...tenantForm, region: event.target.value })} /></div>
                       {editingTenantId && <div className="col-md-3"><label className="form-label" htmlFor="tenant-status">Subscription status</label><select id="tenant-status" className="form-select" value={tenantForm.subscription_status} onChange={(event) => setTenantForm({ ...tenantForm, subscription_status: event.target.value })}><option value="active">Active</option><option value="paused">Paused</option></select></div>}
                     </div>
-                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? (editingTenantPassword || editingTenantPasswordConfirm ? 'Save tenant & password' : 'Save tenant') : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); setEditingTenantPassword(''); setEditingTenantPasswordConfirm(''); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => setTenantForm(emptyTenant)}>Clear form</button>}</div>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? (editingTenantPassword || editingTenantPasswordConfirm ? 'Save tenant & password' : 'Save tenant') : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); setTenantLogoError(''); setEditingTenantPassword(''); setEditingTenantPasswordConfirm(''); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setTenantForm(emptyTenant); setTenantLogoError(''); }}>Clear form</button>}</div>
                   </form>
                   </div>
                   </div>
@@ -2141,7 +2232,7 @@ function App() {
                   <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">Change password</span><span className="workspace-section-toggle-description">Update the password for your account.</span></span>
                   <span className="workspace-section-toggle-action">{profilePasswordOpen ? 'Collapse −' : 'Expand +'}</span>
                 </button>
-                {profilePasswordOpen && <form id="workspace-profile-password-fields" className="workspace-profile-form" onSubmit={changeOwnProfilePassword}>
+                {profilePasswordOpen && !profilePasswordResetOpen && <form id="workspace-profile-password-fields" className="workspace-profile-form" onSubmit={changeOwnProfilePassword}>
                   <div className="workspace-profile-section-heading"><p>Use your current password to set a new one.</p></div>
                   <div className="workspace-profile-fields workspace-profile-password-fields">
                     <label>Current password<input className="form-control" type="password" value={profileCurrentPassword} onChange={(event) => setProfileCurrentPassword(event.target.value)} required autoComplete="current-password" /></label>
@@ -2150,6 +2241,18 @@ function App() {
                   </div>
                   <div className="workspace-profile-actions"><button type="submit" className="workspace-confirm-cancel" disabled={profileBusy || profileLoading || !profileCurrentPassword || !profileNewPassword}>{profileLoading ? 'Loading…' : profileBusy ? 'Updating…' : 'Update password'}</button></div>
                 </form>}
+                {profilePasswordOpen && <div className="workspace-profile-form">
+                  <div className="workspace-profile-section-heading"><p>Forgot your current password? Verify your account by email instead.</p></div>
+                  {!profilePasswordResetOpen && <div className="workspace-profile-actions"><button type="button" className="workspace-confirm-cancel" onClick={requestProfilePasswordReset} disabled={profileBusy || profileLoading}>{profileBusy ? 'Sending code…' : 'Send reset code to email'}</button></div>}
+                  {profilePasswordResetOpen && <form className="workspace-profile-form" onSubmit={confirmProfilePasswordReset}>
+                    <div className="workspace-profile-fields workspace-profile-password-fields">
+                      <label>Email reset code<input className="form-control" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={profilePasswordResetCode} onChange={(event) => setProfilePasswordResetCode(event.target.value.replace(/\D/g, '').slice(0, 6))} required /></label>
+                      <label>New password<input className="form-control" type="password" value={profileNewPassword} onChange={(event) => setProfileNewPassword(event.target.value)} required minLength={10} maxLength={72} autoComplete="new-password" /></label>
+                      <label>Confirm new password<input className="form-control" type="password" value={profilePasswordConfirm} onChange={(event) => setProfilePasswordConfirm(event.target.value)} required minLength={10} maxLength={72} autoComplete="new-password" /></label>
+                    </div>
+                    <div className="workspace-profile-actions"><button type="button" className="workspace-confirm-cancel" onClick={requestProfilePasswordReset} disabled={profileBusy || profileLoading}>{profileBusy ? 'Sending code…' : 'Resend code'}</button><button type="button" className="workspace-confirm-cancel" onClick={() => { setProfilePasswordResetOpen(false); setProfilePasswordResetCode(''); setProfileNewPassword(''); setProfilePasswordConfirm(''); }} disabled={profileBusy || profileLoading}>Use current password</button><button type="submit" className="workspace-confirm-accept" disabled={profileBusy || profileLoading || profilePasswordResetCode.length !== 6 || !profileNewPassword}>{profileBusy ? 'Updating…' : 'Verify code & update password'}</button></div>
+                  </form>}
+                </div>}
               </div>
               {(profileError || profileNotice) && <div className="workspace-profile-feedback" aria-live="polite">{profileError && <p className="workspace-profile-message error" role="alert">{profileError}</p>}{profileNotice && <p className="workspace-profile-message success" role="status">{profileNotice}</p>}</div>}
             </section>

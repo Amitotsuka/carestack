@@ -93,6 +93,7 @@ type Tenant = {
   id: string;
   name: string;
   domain: string;
+  logo_data_url?: string | null;
   admin_name: string;
   admin_email: string;
   admin_phone: string;
@@ -133,6 +134,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   private superAdminAvatarDataUrl: string | null = null;
   private superAdminPhone = '';
   private superAdminEmployeeId = '';
+  private superAdminPasswordResetCodeHash: string | null = null;
+  private superAdminPasswordResetExpiresAt: number | null = null;
   private planCatalog: Plan[] = [
     { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3 },
     { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
@@ -241,7 +244,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       tenants?: Record<string, Tenant & { users: Array<TenantUser & { password?: string }> }>;
       planCatalog?: Plan[];
       clinicInterests?: ClinicInterest[];
-      superAdminProfile?: { name?: string; email?: string; avatar_data_url?: string | null; password_hash?: string; phone?: string; employee_id?: string };
+      superAdminProfile?: { name?: string; email?: string; avatar_data_url?: string | null; password_hash?: string; phone?: string; employee_id?: string; password_reset_code_hash?: string | null; password_reset_expires_at?: number | null };
     };
     this.tenants = state.tenants || {};
     this.planCatalog = state.planCatalog || this.planCatalog;
@@ -253,6 +256,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       this.superAdminPasswordHash = state.superAdminProfile.password_hash || this.superAdminPasswordHash;
       this.superAdminPhone = state.superAdminProfile.phone || '';
       this.superAdminEmployeeId = state.superAdminProfile.employee_id || this.superAdminEmployeeId;
+      this.superAdminPasswordResetCodeHash = state.superAdminProfile.password_reset_code_hash || null;
+      this.superAdminPasswordResetExpiresAt = state.superAdminProfile.password_reset_expires_at || null;
     }
     let migrated = this.migratePasswordHashes();
     if (!state.superAdminProfile || !state.superAdminProfile.employee_id || state.superAdminProfile.phone === undefined) migrated = true;
@@ -368,6 +373,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         password_hash: this.superAdminPasswordHash,
         phone: this.superAdminPhone,
         employee_id: this.superAdminEmployeeId,
+        password_reset_code_hash: this.superAdminPasswordResetCodeHash,
+        password_reset_expires_at: this.superAdminPasswordResetExpiresAt,
       },
     });
   }
@@ -561,6 +568,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       billing_cycle: tenant.billing_cycle,
       monthly_price: this.monthlyRevenueFor(tenant),
       region: tenant.region,
+      logo_configured: Boolean(tenant.logo_data_url),
       patient_count: tenant.patients.length,
       booking_count: tenant.bookings.length,
       telephony: this.publicTelephony(tenant.telephony),
@@ -575,7 +583,26 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       id: tenant.id,
       name: tenant.name,
       domain: tenant.domain,
+      logo_data_url: tenant.logo_data_url || null,
       subscription_status: tenant.subscription_status,
+    };
+  }
+
+  getTenantDetails(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    return {
+      id: tenant.id,
+      name: tenant.name,
+      domain: tenant.domain,
+      logo_data_url: tenant.logo_data_url || null,
+      admin_name: tenant.admin_name,
+      admin_email: tenant.admin_email,
+      admin_phone: tenant.admin_phone,
+      plan: tenant.plan,
+      subscription_status: tenant.subscription_status,
+      billing_cycle: tenant.billing_cycle,
+      region: tenant.region,
     };
   }
 
@@ -691,6 +718,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       id: tenantId,
       name: payload.tenant_name,
       domain: tenantDomain,
+      logo_data_url: payload.logo_data_url || null,
       admin_name: payload.admin_name,
       admin_email: adminEmail,
       admin_phone: payload.admin_phone,
@@ -760,6 +788,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
     if (payload.tenant_name !== undefined) tenant.name = String(payload.tenant_name).trim();
     if (payload.tenant_domain !== undefined) tenant.domain = nextDomain;
+    if (payload.logo_data_url !== undefined) tenant.logo_data_url = payload.logo_data_url || null;
     if (payload.admin_name !== undefined) tenant.admin_name = String(payload.admin_name).trim();
     if (payload.admin_email !== undefined) tenant.admin_email = nextEmail;
     if (payload.admin_phone !== undefined) tenant.admin_phone = String(payload.admin_phone).trim();
@@ -807,6 +836,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       if (!this.superAdminPasswordHash) return 'not_found' as const;
       if (!currentPassword || !await bcrypt.compare(currentPassword, this.superAdminPasswordHash)) return 'current_password_invalid' as const;
       this.superAdminPasswordHash = bcrypt.hashSync(password, 12);
+      this.superAdminPasswordResetCodeHash = null;
+      this.superAdminPasswordResetExpiresAt = null;
       this.persistState();
       await this.pendingPostgresWrite;
       return 'updated' as const;
@@ -907,9 +938,23 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   async requestPasswordReset(email: string) {
     this.assertEmailConfigured();
     const normalizedEmail = email.trim().toLowerCase();
-    const tenant = Object.values(this.tenants).find((item) => item.users.some((user) => user.email.toLowerCase() === normalizedEmail));
-    const user = tenant?.users.find((item) => item.email.toLowerCase() === normalizedEmail);
-    if (tenant && user) {
+    if (normalizedEmail === this.superAdminEmail) {
+      const code = String(randomInt(0, 1000000)).padStart(6, '0');
+      this.superAdminPasswordResetCodeHash = createHash('sha256').update(code).digest('hex');
+      this.superAdminPasswordResetExpiresAt = Date.now() + 15 * 60 * 1000;
+      this.persistState();
+      await this.pendingPostgresWrite;
+      await this.sendEmail(
+        this.superAdminEmail,
+        'Your CareStack platform password reset code',
+        `Hello ${this.superAdminName},\n\nYour platform administrator password reset code is: ${code}\n\nIt expires in 15 minutes. If you did not request this code, you can ignore this email.`,
+      );
+      return { message: 'If an account matches that email, a password reset code has been sent.' };
+    }
+
+    const user = Object.values(this.tenants).flatMap((item) => item.users)
+      .find((item) => item.email.toLowerCase() === normalizedEmail);
+    if (user) {
       const code = String(randomInt(0, 1000000)).padStart(6, '0');
       user.password_reset_code_hash = createHash('sha256').update(code).digest('hex');
       user.password_reset_expires_at = Date.now() + 15 * 60 * 1000;
@@ -926,6 +971,19 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   async resetPassword(email: string, code: string, password: string) {
     const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail === this.superAdminEmail) {
+      if (!this.superAdminPasswordResetCodeHash || !this.superAdminPasswordResetExpiresAt || this.superAdminPasswordResetExpiresAt < Date.now()) return false;
+      const suppliedHash = createHash('sha256').update(code).digest();
+      const savedHash = Buffer.from(this.superAdminPasswordResetCodeHash, 'hex');
+      if (savedHash.length !== suppliedHash.length || !timingSafeEqual(savedHash, suppliedHash)) return false;
+      this.superAdminPasswordHash = bcrypt.hashSync(password, 12);
+      this.superAdminPasswordResetCodeHash = null;
+      this.superAdminPasswordResetExpiresAt = null;
+      this.persistState();
+      await this.pendingPostgresWrite;
+      return true;
+    }
+
     const user = Object.values(this.tenants).flatMap((item) => item.users)
       .find((item) => item.email.toLowerCase() === normalizedEmail);
     if (!user?.password_reset_code_hash || !user.password_reset_expires_at || user.password_reset_expires_at < Date.now()) return false;

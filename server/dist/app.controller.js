@@ -161,6 +161,13 @@ __decorate([
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(700000),
+    (0, class_validator_1.Matches)(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
+    __metadata("design:type", String)
+], TenantOnboardDto.prototype, "logo_data_url", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
     (0, class_validator_1.MinLength)(10),
     (0, class_validator_1.IsByteLength)(10, 72),
     __metadata("design:type", String)
@@ -184,6 +191,13 @@ __decorate([
     (0, class_validator_1.Matches)(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     __metadata("design:type", String)
 ], TenantUpdateDto.prototype, "tenant_domain", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(700000),
+    (0, class_validator_1.Matches)(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
+    __metadata("design:type", String)
+], TenantUpdateDto.prototype, "logo_data_url", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
@@ -616,6 +630,12 @@ let AppController = AppController_1 = class AppController {
     }
     listTenants() {
         return { tenants: this.appService.listTenants() };
+    }
+    getTenantDetails(tenantId) {
+        const tenant = this.appService.getTenantDetails(tenantId);
+        if (!tenant)
+            throw new common_1.NotFoundException('Tenant not found');
+        return { tenant };
     }
     listPlans() {
         return { plans: this.appService.getPlans() };
@@ -1078,6 +1098,15 @@ __decorate([
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
 ], AppController.prototype, "listTenants", null);
+__decorate([
+    (0, common_1.Get)('api/tenants/:tenantId'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('super_admin'),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "getTenantDetails", null);
 __decorate([
     (0, common_1.Get)('api/plans'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),

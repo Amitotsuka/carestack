@@ -48,6 +48,8 @@ button, input {
   font-weight: 800;
   font-size: 1.8rem;
 }
+.auth-logo-image { padding: 6px; border: 1px solid #e5eaf0; border-radius: 16px; background: #fff !important; }
+.auth-logo-image img { width: 100%; height: 100%; object-fit: contain; }
 
 .dashboard-preview {
   background: white;
@@ -1066,7 +1068,10 @@ button, input {
 .site-footer > span { color: #87918a; font-size: 0.72rem; }
 
 .login-overlay { position: fixed; z-index: 20; inset: 0; padding: 20px; display: grid; place-items: center; background: rgba(11, 31, 29, 0.62); backdrop-filter: blur(5px); animation: fade-in 150ms ease both; }
-.login-dialog { position: relative; width: min(100%, 560px); max-height: min(820px, calc(100vh - 40px)); overflow-y: auto; padding: 40px; background: #f8f7f0; color: var(--site-ink); box-shadow: 0 25px 100px rgba(0, 0, 0, 0.26); animation: dialog-arrive 200ms ease both; }
+.login-dialog { position: relative; width: min(100%, 560px); max-height: min(820px, calc(100vh - 40px)); overflow-y: auto; padding: 40px; border: 1px solid rgba(255, 255, 255, 0.72); border-radius: 24px; background: #f8f7f0; color: var(--site-ink); box-shadow: 0 28px 90px rgba(0, 0, 0, 0.3); animation: dialog-arrive 200ms ease both; }
+.login-brand { display: flex; align-items: center; justify-content: center; margin: 0 0 22px; }
+.login-brand-mark { width: 90px; height: 90px; flex: 0 0 90px; display: grid; place-items: center; overflow: hidden; border: 1px solid #dfe4da; border-radius: 18px; background: #fffefa; color: var(--site-forest); font-size: 1.85rem; font-weight: 750; }
+.login-brand-mark img { width: 100%; height: 100%; padding: 4px; object-fit: contain; }
 .login-close { position: absolute; top: 14px; right: 16px; width: 34px; height: 34px; border: 1px solid var(--site-line); border-radius: 50%; background: transparent; color: var(--site-ink); font-size: 1.3rem; line-height: 1; }
 .login-dialog > .section-kicker { margin: 0 0 13px; }
 .login-dialog h2 { margin: 0; color: var(--site-forest); font-family: 'Manrope', sans-serif; font-size: 2rem; font-weight: 650; }
@@ -1080,7 +1085,7 @@ button, input {
 .login-clinic-label small { color: #859188; font-size: 0.68rem; }
 .login-dialog form { display: grid; gap: 8px; }
 .login-dialog form label { margin-top: 5px; color: #53625b; font-size: 0.75rem; font-weight: 650; }
-.login-dialog form input { width: 100%; min-height: 45px; padding: 0 12px; border: 1px solid #cbd2c9; border-radius: 2px; outline: none; background: #fffefa; color: var(--site-ink); font-size: 0.9rem; }
+.login-dialog form input { width: 100%; min-height: 45px; padding: 0 12px; border: 1px solid #cbd2c9; border-radius: 10px; outline: none; background: #fffefa; color: var(--site-ink); font-size: 0.9rem; }
 .login-dialog form input:focus { border-color: #528675; box-shadow: 0 0 0 3px rgba(82, 134, 117, 0.14); }
 .login-submit { width: 100%; margin-top: 9px; justify-content: space-between; }
 .login-error { padding: 10px; background: #ffebe6; color: #a44837; font-size: 0.76rem; }
@@ -1088,6 +1093,11 @@ button, input {
 .login-text-button { justify-self: start; margin-top: 12px; padding: 4px 0; border: 0; background: transparent; color: #3c775f; font-size: .8rem; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .login-text-button:hover { color: #245640; }
 .login-demo-note { margin: 13px 0 0; color: #8a948d; font-size: 0.65rem; }
+.clinic-logo-editor { display: flex; align-items: center; gap: 16px; padding: 15px; border: 1px solid #e4eaf0; border-radius: 12px; background: #f8fafc; }
+.clinic-logo-preview { width: 72px; height: 72px; flex: 0 0 72px; display: grid; place-items: center; overflow: hidden; border: 1px solid #dbe4ec; border-radius: 12px; background: #fff; color: #31528a; font-size: 1.5rem; font-weight: 800; }
+.clinic-logo-preview img { width: 100%; height: 100%; padding: 5px; object-fit: contain; }
+.clinic-logo-controls { min-width: 0; }
+@media (max-width: 480px) { .clinic-logo-editor { align-items: flex-start; } .clinic-logo-preview { width: 58px; height: 58px; flex-basis: 58px; } }
 
 @keyframes hero-rise { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes panel-arrive { from { opacity: 0; transform: translate(10px, 7px); } to { opacity: 1; transform: translate(0, 0); } }
@@ -1140,7 +1150,7 @@ button, input {
 
 @media (max-width: 576px) {
   .login-overlay, .workspace-confirm-overlay { padding: 12px; }
-  .login-dialog { width: 100%; max-height: calc(100vh - 24px); padding: 30px 22px 24px; }
+  .login-dialog { width: 100%; max-height: calc(100vh - 24px); padding: 30px 22px 24px; border-radius: 20px; }
   .workspace-confirm-dialog { width: 100%; padding: 25px 21px; }
   .workspace-confirm-actions { flex-wrap: wrap; }
   .admin-panel { padding: 16px; }

@@ -58,6 +58,8 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
     private superAdminAvatarDataUrl;
     private superAdminPhone;
     private superAdminEmployeeId;
+    private superAdminPasswordResetCodeHash;
+    private superAdminPasswordResetExpiresAt;
     private planCatalog;
     private database?;
     private postgres?;
@@ -153,6 +155,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         billing_cycle: "monthly" | "annual";
         monthly_price: number;
         region: string;
+        logo_configured: boolean;
         patient_count: number;
         booking_count: number;
         telephony: {
@@ -205,7 +208,21 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         id: string;
         name: string;
         domain: string;
+        logo_data_url: string;
         subscription_status: "active" | "paused";
+    };
+    getTenantDetails(tenantId: string): {
+        id: string;
+        name: string;
+        domain: string;
+        logo_data_url: string;
+        admin_name: string;
+        admin_email: string;
+        admin_phone: string;
+        plan: string;
+        subscription_status: "active" | "paused";
+        billing_cycle: "monthly" | "annual";
+        region: string;
     };
     isTenantActive(tenantId: string): boolean;
     getPlans(): Plan[];
@@ -249,6 +266,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         billing_cycle: "monthly" | "annual";
         monthly_price: number;
         region: string;
+        logo_configured: boolean;
         patient_count: number;
         booking_count: number;
         telephony: {
