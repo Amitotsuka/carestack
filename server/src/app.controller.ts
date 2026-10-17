@@ -1,6 +1,8 @@
-import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, NotFoundException, Param, Patch, Post, Put, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min, MinLength } from 'class-validator';
+import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { AppService } from './app.service';
 import { AccessGuard } from './auth/access.guard';
 import { Roles, TenantScoped } from './auth/access.decorator';
@@ -133,6 +135,8 @@ class AppointmentStatusDto {
 
 @Controller()
 export class AppController {
+  private readonly logger = new Logger(AppController.name);
+
   constructor(private readonly appService: AppService, private readonly jwtService: JwtService) {}
 
   @Get('health')
@@ -369,20 +373,53 @@ export class AppController {
     @Body() body: any,
     @Headers('authorization') authorizationHeader: string,
   ) {
-    const authorization = String(authorizationHeader || '').trim();
-    const bearerMatch = /^Bearer\s+([^\s]+)$/i.exec(authorization);
-    // Prefer the dedicated header. Bearer auth supports integrations that expose
-    // a standard Authorization field but do not expose arbitrary header names.
-    const credential = String(suppliedSecret || '').trim() || bearerMatch?.[1] || '';
-    if (!this.appService.validateVoiceToolSecret(tenantId, credential)) {
-      throw new UnauthorizedException('Voice tool authentication failed');
+    const started = performance.now();
+    const traceId = randomUUID();
+    const actionValue = String(body?.action || '').trim().toLowerCase();
+    const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
+    let authenticationMs = 0;
+    let dispatchMs = 0;
+    let outcome = 'success';
+    try {
+      const authStarted = performance.now();
+      const authorization = String(authorizationHeader || '').trim();
+      const bearerMatch = /^Bearer\s+([^\s]+)$/i.exec(authorization);
+      // Prefer the dedicated header. Bearer auth supports integrations that expose
+      // a standard Authorization field but do not expose arbitrary header names.
+      const bodyCredential = String(body?.tool_secret || body?.['x-voice-tool-secret'] || '').trim();
+      const credential = String(suppliedSecret || '').trim() || bearerMatch?.[1] || bodyCredential;
+      const authenticated = this.appService.validateVoiceToolSecret(tenantId, credential);
+      authenticationMs = performance.now() - authStarted;
+      if (!authenticated) throw new UnauthorizedException('Voice tool authentication failed');
+
+      // Exotel can inject its own x-tenant-id metadata. Route tenant and the
+      // credential derived for that tenant are authoritative for this endpoint.
+      // Body credentials are removed before dispatch and are never logged.
+      const toolPayload: Record<string, any> = body && typeof body === 'object' ? { ...body } : {};
+      delete toolPayload.tool_secret;
+      delete toolPayload['x-voice-tool-secret'];
+      const dispatchStarted = performance.now();
+      const result = await this.appService.voiceTool(tenantId, toolPayload);
+      dispatchMs = performance.now() - dispatchStarted;
+      if ('error' in result && result.error === 'Clinic not found.') throw new NotFoundException('Clinic not found');
+      if ('error' in result && result.unavailable === true) {
+        throw new ServiceUnavailableException(`${result.error} Retry with the same request_id.`);
+      }
+      if ('error' in result) throw new BadRequestException(result.error);
+      return result;
+    } catch (error) {
+      outcome = error instanceof ServiceUnavailableException ? 'dependency_unavailable'
+        : error instanceof UnauthorizedException ? 'unauthorized'
+          : error instanceof BadRequestException ? 'rejected'
+            : 'error';
+      throw error;
+    } finally {
+      this.logger.log(JSON.stringify({
+        event: 'voice_tool.request_timing', trace_id: traceId, tenant_id: tenantId, action,
+        authentication_ms: Number(authenticationMs.toFixed(2)), dispatch_ms: Number(dispatchMs.toFixed(2)),
+        total_ms: Number((performance.now() - started).toFixed(2)), outcome,
+      }));
     }
-    // Exotel can inject its own x-tenant-id metadata. Route tenant and the
-    // credential derived for that tenant are authoritative for this endpoint.
-    const result = await this.appService.voiceTool(tenantId, body);
-    if ('error' in result && result.error === 'Clinic not found.') throw new NotFoundException('Clinic not found');
-    if ('error' in result) throw new BadRequestException(result.error);
-    return result;
   }
 
   @Patch('api/tenants/:tenantId/subscription')

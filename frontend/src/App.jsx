@@ -148,6 +148,11 @@ function App() {
   const [tenantForm, setTenantForm] = useState(emptyTenant);
   const [appointmentQuery, setAppointmentQuery] = useState('');
   const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
+  const [appointmentDateFilter, setAppointmentDateFilter] = useState('upcoming');
+  const [patientQuery, setPatientQuery] = useState('');
+  const [patientStatusFilter, setPatientStatusFilter] = useState('all');
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
   const [voiceAgent, setVoiceAgent] = useState(defaultVoiceAgent);
   const [clinicCallingNumber, setClinicCallingNumber] = useState('');
   const [telephonyTenantId, setTelephonyTenantId] = useState(null);
@@ -302,7 +307,7 @@ function App() {
     }
   };
 
-  const loadDashboard = async (tenantId) => {
+  const loadDashboard = async (tenantId, throwOnError = false) => {
     if (!tenantId) return;
     try {
       const dashboard = await request(`/api/tenant/${tenantId}/dashboard`);
@@ -311,8 +316,10 @@ function App() {
       setBookings(dashboard.bookings || []);
       setVoiceAgent({ ...defaultVoiceAgent, ...(dashboard.voice_agent || {}), clinic_context: { ...defaultVoiceAgent.clinic_context, ...(dashboard.voice_agent?.clinic_context || {}) } });
       setClinicCallingNumber(dashboard.telephony?.phone_number || '');
+      setLastRefreshed(new Date());
     } catch (err) {
       setError(err.message || 'Dashboard could not be loaded.');
+      if (throwOnError) throw err;
     }
   };
 
@@ -459,6 +466,22 @@ function App() {
     setPlans(planDataResponse.plans || []);
     setAdminDashboard(dashboardResponse);
     setClinicInterests(clinicInterestsResponse.clinic_interests || []);
+    setLastRefreshed(new Date());
+  };
+
+  const refreshWorkspace = async () => {
+    if (!session) return;
+    setRefreshing(true);
+    setError('');
+    try {
+      if (session.role === 'super_admin') await loadAdminData();
+      else await loadDashboard(session.tenant_id, true);
+      setNotice('Workspace data is up to date.');
+    } catch (refreshError) {
+      setError(refreshError.message || 'Could not refresh workspace data.');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const submitClinicInterest = async (event) => {
@@ -807,13 +830,26 @@ function App() {
   const maxActivityCount = Math.max(1, ...analytics.activity.map((day) => Math.max(day.patients, day.bookings)));
   const maxStatusCount = Math.max(1, ...analytics.status_breakdown.map((item) => item.count));
   const maxDoctorCount = Math.max(1, ...analytics.doctor_workload.map((item) => item.count));
+  const clinicToday = new Intl.DateTimeFormat('en-CA', { timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
   const filteredBookings = bookings.filter((booking) => {
     const matchesStatus = appointmentStatusFilter === 'all' || booking.status === appointmentStatusFilter;
     const query = appointmentQuery.trim().toLowerCase();
     const matchesQuery = !query || [booking.id, booking.patient_name, booking.phone_number, booking.doctor_name]
       .some((value) => String(value || '').toLowerCase().includes(query));
-    return matchesStatus && matchesQuery;
+    const matchesDate = appointmentDateFilter === 'all'
+      || (appointmentDateFilter === 'today' && booking.appointment_date === clinicToday)
+      || (appointmentDateFilter === 'upcoming' && booking.appointment_date >= clinicToday && !['cancelled', 'no_show'].includes(booking.status));
+    return matchesStatus && matchesQuery && matchesDate;
   });
+  const filteredPatients = patients.filter((patient) => {
+    const query = patientQuery.trim().toLowerCase();
+    const matchesQuery = !query || [patient.id, patient.name, patient.phone, patient.email]
+      .some((value) => String(value || '').toLowerCase().includes(query));
+    return matchesQuery && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
+  });
+  const displayedPatients = activeView === 'patients' ? filteredPatients : patients.slice(0, 8);
+  const clinicDoctors = [...new Set([...(voiceAgent.clinic_context?.doctors || []), bookingForm.doctor_name].filter(Boolean))];
+  if (!clinicDoctors.length) clinicDoctors.push('Doctor to be assigned');
   const upcomingBookings = bookings.filter((booking) => {
     const today = new Date().toISOString().slice(0, 10);
     return booking.appointment_date >= today && !['cancelled', 'no_show'].includes(booking.status);
@@ -1103,34 +1139,48 @@ function App() {
 
   const renderDashboard = () => {
     if (!session) return null;
+    const workspaceNavigation = superAdmin
+      ? [['overview', 'Overview', '⌂'], ['leads', 'Clinic requests', '✳'], ['tenants', 'Tenants', '▦'], ['subscriptions', 'Plans & subscriptions', '◈']]
+      : [['overview', 'Overview', '⌂'], ['agents', 'AI receptionist', '◉'], ['patients', 'Patients', '♙'], ['appointments', 'Appointments', '▣'], ['reports', 'Reports', '▥']];
+    const pageTitle = superAdmin
+      ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic requests' : 'Tenant management'
+      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'patients' ? 'Patient directory' : 'Appointments';
+    const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
 
     return (
-      <div className="page-shell dashboard-shell">
-        <div className="container-fluid">
-          <div className="row min-vh-100">
-            <aside className="col-lg-2 bg-dark text-white px-3 py-4">
-              <div className="brand-mark text-white mb-4">{superAdmin ? 'CARESTACK' : tenantBrand.shortName.toUpperCase()}</div>
-              <nav className="nav flex-column gap-2">
-                {(superAdmin ? [['overview', 'Overview'], ['leads', 'Clinic requests'], ['tenants', 'Tenants'], ['subscriptions', 'Plans & subscriptions']] : [['overview', 'Overview'], ['agents', 'Agents'], ['patients', 'Patients'], ['appointments', 'Appointments'], ['reports', 'Reports']]).map(([view, label]) => (
-                  <button key={view} className={`nav-link text-start border-0 ${activeView === view ? 'active' : ''}`} onClick={() => { setActiveView(view); setError(''); setNotice(''); }}>{label}</button>
-                ))}
-              </nav>
+      <div className={`page-shell dashboard-shell ${superAdmin ? 'admin-workspace' : 'clinic-workspace'}`}>
+        <div className="workspace-layout">
+          <aside className="workspace-sidebar">
+            <a className="workspace-brand" href="#workspace-home" aria-label="CareStack workspace home"><span className="workspace-brand-mark">C</span><span>carestack<small>CLINIC WORKSPACE</small></span></a>
+            {!superAdmin && <div className="sidebar-clinic-card"><span className="clinic-avatar">{tenantBrand.shortName.charAt(0)}</span><span><strong>{displayedTenant}</strong><small>{tenantData?.plan || 'Clinic'} workspace</small></span><i aria-hidden="true">⌄</i></div>}
+            <p className="sidebar-section-label">WORKSPACE</p>
+            <nav className="workspace-nav" aria-label="Workspace navigation">
+              {workspaceNavigation.map(([view, label, icon]) => (
+                <button key={view} className={`workspace-nav-link ${activeView === view ? 'active' : ''}`} aria-current={activeView === view ? 'page' : undefined} onClick={() => { setActiveView(view); setError(''); setNotice(''); }}>
+                  <span className="workspace-nav-icon" aria-hidden="true">{icon}</span><span className="workspace-nav-label">{label}</span>
+                  {!superAdmin && view === 'appointments' && upcomingBookings.length > 0 && <span className="workspace-nav-count">{upcomingBookings.length}</span>}
+                </button>
+              ))}
+            </nav>
+            <div className="sidebar-spacer" />
+            <div className="sidebar-help-card"><span className="help-orb">✦</span><strong>Need a hand?</strong><small>Your clinic workspace is ready for today.</small><button onClick={() => { setActiveView(superAdmin ? 'tenants' : 'agents'); }}>Explore workspace <span>→</span></button></div>
+            <div className="workspace-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : 'Clinic team')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
+          </aside>
 
-              <div className="mt-5 p-3 rounded-3 bg-secondary-subtle text-dark">
-                <small className="d-block text-uppercase text-muted mb-2">{superAdmin ? 'Access level' : 'Tenant'}</small>
-                <strong>{superAdmin ? 'All organizations' : displayedTenant}</strong>
+          <main className="workspace-main">
+            <header className="workspace-topbar">
+              <div className="workspace-location"><span className="location-dot" />{superAdmin ? 'CareStack platform' : displayedTenant}<span className="location-divider">/</span><span>{workspaceNavigation.find(([view]) => view === activeView)?.[1]}</span></div>
+              <div className="workspace-top-actions">
+                {!superAdmin && <span className="tenant-live-badge"><span />Clinic active</span>}
+                <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''}>↻</span>{refreshing ? 'Updating' : 'Refresh'}</button>
+                {!superAdmin && <button className="btn btn-primary workspace-new-booking" onClick={() => { setActiveView('appointments'); window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>＋ <span>New appointment</span></button>}
+              {superAdmin && activeView === 'tenants' && <button className="btn btn-primary" onClick={() => document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>＋ Add clinic</button>}
               </div>
+            </header>
 
-              <button className="btn btn-outline-light w-100 mt-4" onClick={logout}>Log out</button>
-            </aside>
-
-            <main className="col-lg-10 p-4">
-              <div className="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
-                <div>
-                  <p className="small text-primary fw-bold mb-1 text-uppercase">{superAdmin ? 'Super admin' : `${tenantData?.plan || 'Clinic'} plan · ${tenantData?.region || 'India'}`}</p>
-                  <h2 className="fw-bold mb-0">{superAdmin ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic subscription requests' : 'Tenant management' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI agents & voice calling' : displayedTenant}</h2>
-                </div>
-                {!superAdmin && <div className="d-flex align-items-center gap-2 flex-wrap"><span className="tenant-live-badge"><span />Workspace active</span>{activeView === 'reports' ? <button className="btn btn-outline-primary" onClick={() => exportTenantCsv('bookings')}>Export appointments</button> : <button className="btn btn-primary" onClick={() => { if (activeView === 'appointments') document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth' }); else setActiveView('patients'); }}>{activeView === 'appointments' ? '+ Book appointment' : '+ Add patient'}</button>}</div>}
+            <div className="workspace-content">
+              <div className="workspace-page-heading">
+                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}{!superAdmin && activeView === 'overview' ? `, ${String(session.name || 'team').split(' ')[0]}` : ''}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : 'Track clinic activity and export the records your team needs.'}</p></div>
               </div>
 
               {(notice || error) && <div className={`alert ${error ? 'alert-danger' : 'alert-success'} alert-dismissible`} role="status">
@@ -1190,7 +1240,7 @@ function App() {
               {superAdmin && activeView === 'tenants' && <div className="card border-0 shadow-sm rounded-4 mb-4">
                 <div className="card-body">
                   <h4 className="mb-3">Tenant organizations</h4>
-                  {voiceToolSecret && <div className="alert alert-info" role="status"><strong>Connect this clinic’s Exotel IVR to CareStack booking</strong><p className="mb-2">This clinic-scoped secret lets the Exotel Voicebot call its CareStack tools. Copy it into the Exotel tool’s <code>x-voice-tool-secret</code> header. It is shown only in this admin session.</p><label className="form-label">Exotel reachable API base URL</label><input className="form-control font-monospace mb-2" value={voiceToolApiBaseUrl} onChange={(event) => { const value = event.target.value.trim().replace(/\/+$/, ''); setVoiceToolApiBaseUrl(value); try { localStorage.setItem('carestack-voice-tool-api-base-url', value); } catch {} }} placeholder={API_URL} /><small className="d-block text-muted mb-2">The default uses the configured CareStack API URL. For local testing use <code>http://localhost:3001</code>; Exotel calls require the API service's public HTTPS URL.</small><label className="form-label">Clinic voice tool endpoint</label><input className="form-control font-monospace mb-2" readOnly value={`${voiceToolApiBaseUrl.replace(/\/+$/, '')}/api/voice/tools/${telephonyTenantId}`} onFocus={(event) => event.target.select()} />{/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(voiceToolApiBaseUrl) && <p className="alert alert-warning py-2">Exotel cloud cannot reach localhost. The local endpoint works for testing on this machine; calls from Exotel need a public HTTPS URL.</p>}<label className="form-label">Clinic tool secret</label><input className="form-control font-monospace" readOnly value={voiceToolSecret} onFocus={(event) => event.target.select()} /><div className="mt-3"><strong>Exotel console setup</strong><ol className="mb-2 mt-2"><li>In <b>Build Bot → Tool Integration</b>, create three active POST tools using the endpoint above and JSON request bodies below. Add header <code>x-voice-tool-secret</code> with the clinic secret.</li><li>Attach the tools to the clinic’s published Voicebot and map each value from the caller’s speech. Use ISO dates (<code>YYYY-MM-DD</code>) and 24-hour times (<code>HH:mm</code>).</li><li>In App Bazaar, connect <b>Greeting → IVR Menu</b>. Set “Press 1 for appointment booking” to the published booking Voicebot applet. Assign the saved app flow to this clinic’s ExoPhone.</li><li>Tell the bot to collect the patient’s name, callback number, doctor, date, time and reason; check availability; read all details back; get a clear yes; then call the booking tool. Read the confirmed booking ID back to the caller.</li></ol><details><summary>Tool request bodies</summary><p className="small mt-2 mb-1">Create a <code>carestack_clinic_info</code> tool with this body:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'clinic_info' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_check_availability</code> tool. Map date, time and doctor_name from the conversation:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'availability', date: 'YYYY-MM-DD', time: 'HH:mm', doctor_name: 'doctor name' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_book_appointment</code> tool. Map request_id to a unique ID per call, confirmed to true only after caller approval, and the remaining fields from the confirmed details:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'book', request_id: 'unique-call-id', confirmed: true, patient_name: 'patient name', phone_number: '+919876543210', doctor_name: 'doctor name', date: 'YYYY-MM-DD', time: 'HH:mm', reason: 'visit reason' }, null, 2)}</pre></details><p className="small mb-0"><b>Important:</b> Exotel must be able to reach this endpoint over public HTTPS. A localhost URL will not work from an Exotel call. A successful appointment appears immediately in this clinic’s CareStack appointments; booking hours, future dates, duplicate slots and caller confirmation are checked by the API.</p></div></div>}
+                  {voiceToolSecret && <div className="alert alert-info" role="status"><strong>Connect this clinic’s Exotel IVR to CareStack booking</strong><p className="mb-2">This clinic-scoped secret lets the Exotel Voicebot call its CareStack tools. Copy it into the Exotel tool’s <code>x-voice-tool-secret</code> header. If Exotel has no header value field, add POST body parameter tool_secret and set it as a Constant Value in the attached tool, never an LLM prompt. The API validates it for the URL tenant and strips it before processing; use HTTPS.</p><label className="form-label">Exotel reachable API base URL</label><input className="form-control font-monospace mb-2" value={voiceToolApiBaseUrl} onChange={(event) => { const value = event.target.value.trim().replace(/\/+$/, ''); setVoiceToolApiBaseUrl(value); try { localStorage.setItem('carestack-voice-tool-api-base-url', value); } catch {} }} placeholder={API_URL} /><small className="d-block text-muted mb-2">The default uses the configured CareStack API URL. For local testing use <code>http://localhost:3001</code>; Exotel calls require the API service's public HTTPS URL.</small><label className="form-label">Clinic voice tool endpoint</label><input className="form-control font-monospace mb-2" readOnly value={`${voiceToolApiBaseUrl.replace(/\/+$/, '')}/api/voice/tools/${telephonyTenantId}`} onFocus={(event) => event.target.select()} />{/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(voiceToolApiBaseUrl) && <p className="alert alert-warning py-2">Exotel cloud cannot reach localhost. The local endpoint works for testing on this machine; calls from Exotel need a public HTTPS URL.</p>}<label className="form-label">Clinic tool secret</label><input className="form-control font-monospace" readOnly value={voiceToolSecret} onFocus={(event) => event.target.select()} /><div className="mt-3"><strong>Exotel console setup</strong><ol className="mb-2 mt-2"><li>In <b>Build Bot → Tool Integration</b>, create three active POST tools using the endpoint above and JSON request bodies below. Set the clinic secret as a constant x-voice-tool-secret header. If this UI has no header value field, add POST body parameter tool_secret and map it as a Constant Value (never an LLM prompt).</li><li>Attach the tools to the clinic’s published Voicebot and map each value from the caller’s speech. The API accepts dates such as today/tomorrow and times such as 10 AM; normalize relative dates in the clinic timezone.</li><li>In App Bazaar, connect <b>Greeting → IVR Menu</b>. Set “Press 1 for appointment booking” to the published booking Voicebot applet. Assign the saved app flow to this clinic’s ExoPhone.</li><li>Tell the bot to collect the patient’s name, callback number, date, time and reason, asking for a doctor preference only if the caller has one. Check availability; if no doctor was requested, pass doctor_name as an empty string. Tell the caller the actual doctor_name returned. Repeat all details including that doctor and get clear confirmation before calling book. Read the confirmed booking ID back.</li></ol><details><summary>Tool request bodies</summary><p className="small mt-2 mb-1">Create a <code>carestack_clinic_info</code> tool with this body:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'clinic_info' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_check_availability</code> tool with four string fields: action is the constant availability; map date, time and doctor_name from speech. If no doctor preference was given, send doctor_name as an empty string:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'availability', date: 'aaj', time: '11 baje', doctor_name: '' }, null, 2)}</pre><p className="small mb-1">Create a <code>carestack_book_appointment</code> tool. Map request_id to a unique ID per call; use the doctor_name returned by availability after telling the caller and getting approval. Set confirmed to true only after the caller approves all details:</p><pre className="small bg-white p-2 rounded">{JSON.stringify({ action: 'book', request_id: 'unique-call-id', confirmed: true, patient_name: 'patient name', phone_number: '+919876543210', doctor_name: 'doctor name', date: 'YYYY-MM-DD', time: 'HH:mm', reason: 'visit reason' }, null, 2)}</pre></details><p className="small mb-0"><b>Important:</b> Exotel must be able to reach this endpoint over public HTTPS. A localhost URL will not work from an Exotel call. A successful appointment appears immediately in this clinic’s CareStack appointments; booking hours, future dates, duplicate slots and caller confirmation are checked by the API.</p></div></div>}
                   <div className="table-responsive mb-4"><table className="table align-middle">
                     <thead><tr><th>Clinic</th><th>Portal</th><th>Administrator</th><th>Plan</th><th>AI phone</th><th>Subscription</th><th className="text-end">Actions</th></tr></thead>
                     <tbody>{tenants.length ? tenants.map((tenant) => <tr key={tenant.id}>
@@ -1285,7 +1335,7 @@ function App() {
                     <div className="row g-3">
                       <div className="col-md-6"><label className="form-label" htmlFor="booking-patient">Patient name</label><input id="booking-patient" className="form-control" required minLength="2" value={bookingForm.patient_name} onChange={(event) => setBookingForm({ ...bookingForm, patient_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="booking-phone">Phone number</label><input id="booking-phone" type="tel" className="form-control" required minLength="7" value={bookingForm.phone_number} onChange={(event) => setBookingForm({ ...bookingForm, phone_number: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label" htmlFor="booking-doctor">Doctor</label><select id="booking-doctor" className="form-select" value={bookingForm.doctor_name} onChange={(event) => setBookingForm({ ...bookingForm, doctor_name: event.target.value })}><option>Dr. Sarah Chen</option><option>Dr. James Patel</option><option>Dr. Elena Gomez</option></select></div>
+                      <div className="col-md-6"><label className="form-label" htmlFor="booking-doctor">Doctor</label><select id="booking-doctor" className="form-select" value={bookingForm.doctor_name} onChange={(event) => setBookingForm({ ...bookingForm, doctor_name: event.target.value })}>{clinicDoctors.map((doctor) => <option key={doctor}>{doctor}</option>)}</select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="booking-date">Date</label><input id="booking-date" type="date" className="form-control" required value={bookingForm.appointment_date} onChange={(event) => setBookingForm({ ...bookingForm, appointment_date: event.target.value })} /></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="booking-time">Time</label><input id="booking-time" type="time" className="form-control" required value={bookingForm.appointment_time} onChange={(event) => setBookingForm({ ...bookingForm, appointment_time: event.target.value })} /></div>
                       <div className="col-12"><label className="form-label" htmlFor="booking-reason">Reason for visit</label><input id="booking-reason" className="form-control" value={bookingForm.reason} onChange={(event) => setBookingForm({ ...bookingForm, reason: event.target.value })} /></div>
@@ -1316,10 +1366,16 @@ function App() {
               {!superAdmin && (activeView === 'overview' || activeView === 'patients' || activeView === 'appointments') && <div className="card border-0 shadow-sm rounded-4">
                 <div className="card-body">
                   <div className="d-flex justify-content-between align-items-center gap-3 flex-wrap mb-3"><div><h4 className="mb-1">{activeView === 'appointments' ? 'Appointment register' : activeView === 'overview' ? 'Recent patients' : 'Patient directory'}</h4>{activeView === 'appointments' && <p className="text-muted small mb-0">Update outcomes here; changes recalculate clinic analytics.</p>}</div>{activeView === 'patients' && <button className="btn btn-sm btn-outline-primary" onClick={() => exportTenantCsv('patients')}>Export patients</button>}</div>
-                  {activeView === 'appointments' && <div className="row g-2 align-items-end mb-3">
-                    <div className="col-md-6"><label className="form-label small" htmlFor="appointment-search">Search appointments</label><input id="appointment-search" className="form-control" placeholder="Patient, doctor, phone, or reference" value={appointmentQuery} onChange={(event) => setAppointmentQuery(event.target.value)} /></div>
-                    <div className="col-md-3"><label className="form-label small" htmlFor="appointment-status-filter">Status</label><select id="appointment-status-filter" className="form-select" value={appointmentStatusFilter} onChange={(event) => setAppointmentStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></div>
-                    <div className="col-md-3 d-grid"><button className="btn btn-outline-secondary" onClick={() => exportTenantCsv('bookings')}>Export appointments</button></div>
+                  {activeView === 'appointments' && <div className="workspace-table-tools">
+                    <div className="workspace-search"><label className="visually-hidden" htmlFor="appointment-search">Search appointments</label><span aria-hidden="true">⌕</span><input id="appointment-search" className="form-control" placeholder="Search patient, doctor, phone, or reference" value={appointmentQuery} onChange={(event) => setAppointmentQuery(event.target.value)} /></div>
+                    <div className="workspace-filter-pills" role="group" aria-label="Appointment date range">{[['today', 'Today'], ['upcoming', 'Upcoming'], ['all', 'All dates']].map(([value, label]) => <button type="button" key={value} className={appointmentDateFilter === value ? 'active' : ''} aria-pressed={appointmentDateFilter === value} onClick={() => setAppointmentDateFilter(value)}>{label}</button>)}</div>
+                    <label className="visually-hidden" htmlFor="appointment-status-filter">Filter by status</label><select id="appointment-status-filter" className="form-select workspace-status-filter" value={appointmentStatusFilter} onChange={(event) => setAppointmentStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select>
+                    <button className="btn btn-outline-secondary" onClick={() => exportTenantCsv('bookings')}>Export</button>
+                  </div>}
+                  {activeView === 'patients' && <div className="workspace-table-tools">
+                    <div className="workspace-search"><label className="visually-hidden" htmlFor="patient-search">Search patients</label><span aria-hidden="true">⌕</span><input id="patient-search" className="form-control" placeholder="Search name, phone, email, or patient ID" value={patientQuery} onChange={(event) => setPatientQuery(event.target.value)} /></div>
+                    <label className="visually-hidden" htmlFor="patient-status-filter">Filter patients by status</label><select id="patient-status-filter" className="form-select workspace-status-filter" value={patientStatusFilter} onChange={(event) => setPatientStatusFilter(event.target.value)}><option value="all">All patients</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+                    <span className="workspace-result-count">{filteredPatients.length} of {patients.length} patients</span>
                   </div>}
                   <div className="table-responsive">
                     <table className="table align-middle">
@@ -1338,12 +1394,12 @@ function App() {
                           <tr><td colSpan="6" className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
                         ) : filteredBookings.map((booking) => (
                           <tr key={booking.id}><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td><td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></td></tr>
-                        )) : patients.length === 0 ? (
+                        )) : displayedPatients.length === 0 ? (
                           <tr>
-                            <td colSpan={activeView === 'patients' ? 6 : 5} className="text-muted">No patients yet.</td>
+                            <td colSpan={activeView === 'patients' ? 6 : 5} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
                           </tr>
                         ) : (
-                          patients.map((patient) => (
+                          displayedPatients.map((patient) => (
                             <tr key={patient.id}>
                               <td>{patient.id}</td>
                               <td>{patient.name}</td>
@@ -1361,9 +1417,9 @@ function App() {
                   </div>
                 </div>
               </div>}
+              </div>
             </main>
           </div>
-        </div>
       </div>
     );
   };

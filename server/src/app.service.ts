@@ -3,6 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
 
@@ -111,11 +112,16 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   private database?: Database.Database;
   private postgres?: Pool;
   private pendingPostgresWrite: Promise<void> = Promise.resolve();
+  private pendingPostgresPayload?: string;
+  private postgresWriteScheduled = false;
 
   constructor() {
     const databaseUrl = process.env.DATABASE_URL?.trim();
     if (databaseUrl) {
-      this.postgres = new Pool({ connectionString: databaseUrl });
+      // Keep a single shared pool for this service process. Bound connection
+      // acquisition and SQL execution so tool calls fail clearly within the
+      // integration's short request budget instead of waiting indefinitely.
+      this.postgres = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 2500, statement_timeout: 4500 });
       return;
     }
 
@@ -150,18 +156,27 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     if (!this.postgres) return;
-    await this.postgres.query(`
-      CREATE TABLE IF NOT EXISTS app_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL
-      )
-    `);
-    const result = await this.postgres.query<{ payload: unknown }>('SELECT payload FROM app_state WHERE id = 1');
-    if (result.rows[0]) {
-      if (this.loadState(result.rows[0].payload as string | object)) await this.writePostgresState();
-    } else {
-      await this.writePostgresState();
+    const started = performance.now();
+    let outcome = 'success';
+    try {
+      await this.postgres.query(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          payload JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL
+        )
+      `);
+      const result = await this.postgres.query<{ payload: unknown }>('SELECT payload FROM app_state WHERE id = 1');
+      if (result.rows[0]) {
+        if (this.loadState(result.rows[0].payload as string | object)) await this.writePostgresState();
+      } else {
+        await this.writePostgresState();
+      }
+    } catch (error) {
+      outcome = 'failure';
+      throw error;
+    } finally {
+      console.info(JSON.stringify({ event: 'postgres.startup_timing', duration_ms: Number((performance.now() - started).toFixed(2)), outcome }));
     }
   }
 
@@ -210,9 +225,17 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   private persistState() {
     const payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests });
     if (this.postgres) {
-      this.pendingPostgresWrite = this.pendingPostgresWrite
-        .catch(() => undefined)
-        .then(() => this.writePostgresState(payload));
+      // Each payload contains a full state snapshot. While one snapshot is
+      // being written, later mutations can replace the queued snapshot with a
+      // newer one instead of forcing every caller to wait through redundant
+      // sequential upserts. All waiters still await the final coalesced write.
+      this.pendingPostgresPayload = payload;
+      if (!this.postgresWriteScheduled) {
+        this.postgresWriteScheduled = true;
+        this.pendingPostgresWrite = this.pendingPostgresWrite
+          .catch(() => undefined)
+          .then(() => this.flushPendingPostgresWrites());
+      }
       return;
     }
     this.database!.prepare(`
@@ -222,13 +245,33 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     `).run(payload, new Date().toISOString());
   }
 
+  private async flushPendingPostgresWrites() {
+    try {
+      while (this.pendingPostgresPayload !== undefined) {
+        const payload = this.pendingPostgresPayload;
+        this.pendingPostgresPayload = undefined;
+        await this.writePostgresState(payload);
+      }
+    } finally {
+      this.postgresWriteScheduled = false;
+    }
+  }
+
   private async writePostgresState(payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests })) {
     if (!this.postgres) return;
-    await this.postgres.query(`
-      INSERT INTO app_state (id, payload, updated_at)
-      VALUES (1, $1::jsonb, NOW())
-      ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
-    `, [payload]);
+    const started = performance.now();
+    try {
+      await this.postgres.query(`
+        INSERT INTO app_state (id, payload, updated_at)
+        VALUES (1, $1::jsonb, NOW())
+        ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+      `, [payload]);
+      console.info(JSON.stringify({ event: 'postgres.state_write_timing', duration_ms: Number((performance.now() - started).toFixed(2)), payload_bytes: Buffer.byteLength(payload), outcome: 'success' }));
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String((error as any).code).slice(0, 32) : 'unknown';
+      console.error(JSON.stringify({ event: 'postgres.state_write_timing', duration_ms: Number((performance.now() - started).toFixed(2)), payload_bytes: Buffer.byteLength(payload), outcome: 'failure', error_code: code }));
+      throw error;
+    }
   }
 
   private seed() {
@@ -872,6 +915,23 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   async voiceTool(tenantId: string, payload: any) {
+    const started = performance.now();
+    const actionValue = String(payload?.action || '').trim().toLowerCase();
+    const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
+    let outcome = 'success';
+    try {
+      const result = await this.dispatchVoiceTool(tenantId, payload);
+      if (result && typeof result === 'object' && 'error' in result) outcome = (result as any).unavailable ? 'dependency_unavailable' : 'rejected';
+      return result;
+    } catch (error) {
+      outcome = 'error';
+      throw error;
+    } finally {
+      console.info(JSON.stringify({ event: 'voice_tool.service_timing', tenant_id: tenantId, action, duration_ms: Number((performance.now() - started).toFixed(2)), outcome }));
+    }
+  }
+
+  private async dispatchVoiceTool(tenantId: string, payload: any) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return { error: 'Clinic not found.' };
     const action = String(payload?.action ?? '').trim().toLowerCase();
@@ -885,7 +945,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         appointment_duration_minutes: this.appointmentDuration(tenantId),
         address: context.address || null, services: context.services, fees: context.fees || null, doctors: context.doctors,
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
-        response_policy: 'Only values returned here are approved. Offer a human receptionist for other clinic questions.',
+        response_policy: 'Only values returned here are approved. Accept natural date and time expressions. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. Offer a human receptionist for other clinic questions.',
       };
     }
     if (action === 'faq') {
@@ -895,33 +955,58 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       return match ? { matched: true, question: match.question, answer: match.answer, source: 'clinic-approved FAQ' } : { matched: false, handoff: true, message: 'No approved FAQ answer found. Offer clinic staff; do not guess.' };
     }
     if (action === 'availability') {
-      const date = String(payload.date || '');
-      const time = String(payload.time || '');
+      if (typeof payload?.date !== 'string' || !payload.date.trim()) {
+        return { error: 'date is required as a string, such as today, tomorrow, or YYYY-MM-DD.' };
+      }
+      if (typeof payload?.time !== 'string' || !payload.time.trim()) {
+        return { error: 'time is required as a string, for example 10 AM or 14:30.' };
+      }
+      if (payload?.doctor_name !== undefined && typeof payload.doctor_name !== 'string') {
+        return { error: 'doctor_name must be a string. Use an empty string when the caller has no doctor preference.' };
+      }
+      const date = this.normalizeVoiceDate(tenantId, payload.date);
+      const time = this.normalizeVoiceTime(payload.time);
       const doctor = String(payload.doctor_name || '').trim();
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !this.isFutureClinicDate(tenantId, date, time) || !doctor) return { error: 'Provide a future date, valid time, and doctor name.' };
+      if (!date) return { error: 'Please provide a date such as today, tomorrow, or a calendar date.' };
+      if (!time) return { error: 'Please provide an appointment time, for example 10 AM or 14:30.' };
+      if (!this.isFutureClinicDate(tenantId, date, time)) return { error: 'That time has passed. Please ask for a future appointment time.' };
       const policy = this.validateAgentBooking(tenantId, time);
       if (policy) return { available: false, message: policy };
-      const conflict = this.findScheduleConflict(tenantId, date, time, doctor);
-      return { available: !conflict, date, time, duration_minutes: this.appointmentDuration(tenantId), doctor_name: doctor, source: 'clinic appointment calendar', message: conflict ? this.scheduleConflictMessage(tenantId, conflict) : 'No overlapping appointment is recorded for this doctor in the requested time window. Confirm with the caller before booking.' };
+      const candidates = doctor ? [doctor] : this.getClinicDoctorCandidates(tenantId);
+      if (!candidates.length) return { available: false, date, time, message: 'No doctors are configured for this clinic yet. Please ask the clinic team to add its doctors before booking.' };
+      const matches = candidates.map((doctorName) => ({ doctor_name: doctorName, conflict: this.findScheduleConflict(tenantId, date, time, doctorName) }));
+      const selected = matches.find((candidate) => !candidate.conflict);
+      return {
+        available: Boolean(selected), date, time, duration_minutes: this.appointmentDuration(tenantId),
+        ...(selected ? { doctor_name: selected.doctor_name } : { doctor_name: doctor || undefined }),
+        available_doctors: matches.filter((candidate) => !candidate.conflict).map((candidate) => candidate.doctor_name),
+        source: 'clinic appointment calendar',
+        message: selected
+          ? `The requested time is available with ${selected.doctor_name}. Tell the caller which doctor is available and get confirmation before booking.`
+          : doctor && matches[0].conflict
+            ? this.scheduleConflictMessage(tenantId, matches[0].conflict)
+            : 'No configured doctor is free at that time. Ask the caller for another time.',
+      };
     }
     if (action === 'book') {
-      const requiredFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'doctor_name', 'date', 'time', 'reason'];
+      const requiredFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'date', 'time', 'reason'];
       const missingFields = requiredFields.filter((field) => payload?.[field] === undefined || payload?.[field] === null || (typeof payload[field] === 'string' && !payload[field].trim()));
       if (missingFields.length) return { error: `Missing required booking fields: ${missingFields.join(', ')}.` };
       if (payload.confirmed !== true) return { error: 'Caller confirmation is required before booking.' };
       const requestId = String(payload.request_id).trim();
       if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId)) return { error: 'request_id must be 8 to 80 letters, numbers, underscores, or hyphens.' };
-      const date = String(payload.date).trim();
-      const time = String(payload.time).trim();
+      const date = this.normalizeVoiceDate(tenantId, payload.date);
+      const time = this.normalizeVoiceTime(payload.time);
       const patientName = String(payload.patient_name).trim();
       const phone = String(payload.phone_number).trim();
-      const doctor = String(payload.doctor_name).trim();
+      const doctor = String(payload.doctor_name || '').trim();
       const reason = String(payload.reason).trim();
       if (patientName.length < 2 || patientName.length > 120) return { error: 'patient_name must be between 2 and 120 characters.' };
       if (!/^\+?[\d\s()-]{8,20}$/.test(phone)) return { error: 'phone_number must contain a valid phone number.' };
       if (doctor.length > 120) return { error: 'doctor_name must be 120 characters or fewer.' };
       if (reason.length > 500) return { error: 'reason must be 500 characters or fewer.' };
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !this.isFutureClinicDate(tenantId, date, time)) return { error: 'Provide a valid future date in YYYY-MM-DD format and time in HH:mm format.' };
+      if (!date || !time) return { error: 'Provide a date such as today or tomorrow and a time such as 10 AM or 14:30.' };
+      if (!this.isFutureClinicDate(tenantId, date, time)) return { error: 'That time has passed. Please ask for a future appointment time.' };
       const id = `VOICE-${requestId}`;
       const prior = tenant.bookings.find((booking) => booking.id === id);
       if (prior) {
@@ -931,10 +1016,25 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       const policy = this.validateAgentBooking(tenantId, time);
       if (policy) return { error: policy };
       const duration = this.appointmentDuration(tenantId);
-      const conflict = this.findScheduleConflict(tenantId, date, time, doctor, duration);
+      let assignedDoctor = doctor;
+      if (!assignedDoctor) {
+        const availableDoctor = this.getClinicDoctorCandidates(tenantId)
+          .find((candidate) => !this.findScheduleConflict(tenantId, date, time, candidate, duration));
+        if (!availableDoctor) return { error: 'No configured doctor is available at that time. Ask the caller for another time or contact the clinic.' };
+        return {
+          booked: false, confirmation_required: true, doctor_name: availableDoctor, date, time,
+          message: `No appointment was created. Offer ${availableDoctor} for this time and get the caller's confirmation. Then call book again with doctor_name set to ${availableDoctor}.`,
+        };
+      }
+      const conflict = this.findScheduleConflict(tenantId, date, time, assignedDoctor, duration);
       if (conflict) return { error: this.scheduleConflictMessage(tenantId, conflict) };
-      const appointment: Booking = { id, patient_name: patientName, phone_number: phone, doctor_name: doctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason, status: 'confirmed' };
-      const saved = await this.addBooking(tenantId, appointment);
+      const appointment: Booking = { id, patient_name: patientName, phone_number: phone, doctor_name: assignedDoctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason, status: 'confirmed' };
+      let saved: Booking | { error: string } | null;
+      try {
+        saved = await this.addBooking(tenantId, appointment);
+      } catch {
+        return { error: 'Appointment storage is temporarily unavailable; booking was not confirmed.', unavailable: true };
+      }
       if (!saved || 'error' in saved) return { error: saved && 'error' in saved ? saved.error : 'Could not save appointment.' };
       if (!saved.id) return { error: 'Appointment persistence did not return an appointment ID.' };
       return { appointment: saved, idempotent_replay: false };
@@ -1151,6 +1251,85 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private getClinicDoctorCandidates(tenantId: string) {
+    const configured = this.getVoiceAgent(tenantId).clinic_context?.doctors || [];
+    const previouslyBooked = this.tenants[tenantId]?.bookings?.map((booking) => booking.doctor_name) || [];
+    const names = [...configured, ...previouslyBooked]
+      .map((name: unknown) => String(name || '').trim())
+      .filter(Boolean);
+    const unique = new Map<string, string>();
+    for (const name of names) if (!unique.has(name.toLocaleLowerCase())) unique.set(name.toLocaleLowerCase(), name);
+    return [...unique.values()];
+  }
+
+  private clinicDateParts(tenantId: string, date = new Date()) {
+    const timezone = this.getVoiceAgent(tenantId).timezone || 'Asia/Kolkata';
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+    return { year: Number(values.year), month: Number(values.month), day: Number(values.day) };
+  }
+
+  private dateKey(year: number, month: number, day: number) {
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return null;
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  private normalizeVoiceDate(tenantId: string, input: unknown): string | null {
+    const raw = String(input || '').trim().toLocaleLowerCase();
+    if (!raw) return null;
+    const today = this.clinicDateParts(tenantId);
+    const relative = raw.normalize('NFC');
+    let offset: number | null = null;
+    if (/\b(day after tomorrow|parso)\b|परसों|परसो/u.test(relative)) offset = 2;
+    else if (/\b(today|aaj|aj)\b|आज/u.test(relative)) offset = 0;
+    else if (/\b(tomorrow|kal)\b|कल/u.test(relative)) offset = 1;
+    if (offset !== null) {
+      const date = new Date(Date.UTC(today.year, today.month - 1, today.day + offset));
+      return this.dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+    }
+
+    let match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw);
+    if (match) return this.dateKey(Number(match[1]), Number(match[2]), Number(match[3]));
+    match = /^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/.exec(raw);
+    if (match) {
+      const year = match[3] ? Number(match[3].length === 2 ? `20${match[3]}` : match[3]) : today.year;
+      return this.dateKey(year, Number(match[2]), Number(match[1]));
+    }
+
+    const months = 'january february march april may june july august september october november december'.split(' ');
+    const monthPattern = months.map((month) => `${month.slice(0, 3)}(?:${month.slice(3)})?`).join('|');
+    match = new RegExp(`^(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?$`, 'i').exec(raw)
+      || new RegExp(`^(${monthPattern})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?$`, 'i').exec(raw);
+    if (match) {
+      const dayFirst = /^\d/.test(match[1]);
+      const day = Number(dayFirst ? match[1] : match[2]);
+      const monthName = (dayFirst ? match[2] : match[1]).slice(0, 3).toLowerCase();
+      const year = Number(match[3] || today.year);
+      return this.dateKey(year, months.findIndex((month) => month.startsWith(monthName)) + 1, day);
+    }
+    return null;
+  }
+
+  private normalizeVoiceTime(input: unknown): string | null {
+    const raw = String(input || '').trim().toLocaleLowerCase();
+    if (!raw) return null;
+    const match = /(?:^|\b)(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|am|pm)?\s*(?:o'?clock|baje|baj[eé]|bje|बजे)?\b/u.exec(raw);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minute = Number(match[2] || 0);
+    const meridiem = match[3]?.replace(/\./g, '')
+      || (/\b(subah|morning)\b|सुबह/u.test(raw) ? 'am' : undefined)
+      || (/\b(shaam|sham|evening|night|raat)\b|दोपहर|शाम|रात/u.test(raw) ? 'pm' : undefined);
+    if (minute > 59) return null;
+    if (meridiem) {
+      if (hour < 1 || hour > 12) return null;
+      if (meridiem === 'am' && hour === 12) hour = 0;
+      if (meridiem === 'pm' && hour < 12) hour += 12;
+    } else if (hour > 23) return null;
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  }
+
   private isFutureClinicDate(tenantId: string, date: string, time: string) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
     const parsed = new Date(`${date}T00:00:00.000Z`);
@@ -1337,7 +1516,16 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async waitForPendingPersistence() {
-    await this.pendingPostgresWrite;
+    const started = performance.now();
+    let outcome = 'success';
+    try {
+      await this.pendingPostgresWrite;
+    } catch (error) {
+      outcome = 'failure';
+      throw error;
+    } finally {
+      console.info(JSON.stringify({ event: 'postgres.persist_wait_timing', duration_ms: Number((performance.now() - started).toFixed(2)), outcome }));
+    }
   }
 
   updateBookingStatus(tenantId: string, bookingId: string, status: string) {

@@ -11,11 +11,14 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
+var AppController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AppController = void 0;
 const common_1 = require("@nestjs/common");
 const jwt_1 = require("@nestjs/jwt");
 const class_validator_1 = require("class-validator");
+const node_crypto_1 = require("node:crypto");
+const node_perf_hooks_1 = require("node:perf_hooks");
 const app_service_1 = require("./app.service");
 const access_guard_1 = require("./auth/access.guard");
 const access_decorator_1 = require("./auth/access.decorator");
@@ -92,6 +95,13 @@ __decorate([
 ], TenantOnboardDto.prototype, "region", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(10),
+    (0, class_validator_1.IsByteLength)(10, 72),
+    __metadata("design:type", String)
+], TenantOnboardDto.prototype, "admin_password", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsIn)(['monthly', 'annual']),
     __metadata("design:type", String)
 ], TenantOnboardDto.prototype, "billing_cycle", void 0);
@@ -146,6 +156,14 @@ __decorate([
     (0, class_validator_1.IsString)(),
     __metadata("design:type", String)
 ], TenantUpdateDto.prototype, "region", void 0);
+class TenantPasswordDto {
+}
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(10),
+    (0, class_validator_1.IsByteLength)(10, 72),
+    __metadata("design:type", String)
+], TenantPasswordDto.prototype, "password", void 0);
 class SubscriptionUpdateDto {
 }
 __decorate([
@@ -239,10 +257,11 @@ __decorate([
     (0, class_validator_1.IsIn)(['confirmed', 'completed', 'cancelled', 'no_show']),
     __metadata("design:type", String)
 ], AppointmentStatusDto.prototype, "status", void 0);
-let AppController = class AppController {
+let AppController = AppController_1 = class AppController {
     constructor(appService, jwtService) {
         this.appService = appService;
         this.jwtService = jwtService;
+        this.logger = new common_1.Logger(AppController_1.name);
     }
     getHealth() {
         return { status: 'ok', service: 'Hospital Node API' };
@@ -339,12 +358,22 @@ let AppController = class AppController {
             throw error;
         }
     }
+    async setTenantAdminPassword(tenantId, body) {
+        const result = await this.appService.setTenantAdminPassword(tenantId, body.password);
+        if (result === 'not_found')
+            throw new common_1.NotFoundException('Tenant not found');
+        if (result === 'admin_not_found')
+            throw new common_1.ConflictException('This tenant has no administrator account');
+        return { updated: true, message: 'Tenant administrator password updated successfully.' };
+    }
     updateTenantTelephony(tenantId, body) {
         const config = this.appService.updateTenantTelephony(tenantId, body || {});
         if (config === null)
             throw new common_1.NotFoundException('Clinic not found');
+        if (config && 'error' in config)
+            throw new common_1.BadRequestException(config.error);
         if (!config)
-            throw new common_1.BadRequestException('Use a unique international format phone number and complete the Sarvam deployment settings.');
+            throw new common_1.BadRequestException('Calling settings were not saved. Check the selected provider and its phone number, then try again.');
         return { telephony: config, voice_tool_secret: this.appService.getVoiceToolSecret(tenantId), message: 'Clinic calling settings saved.' };
     }
     async activateVoiceDeployment(tenantId) {
@@ -363,14 +392,91 @@ let AppController = class AppController {
             throw new common_1.BadRequestException(result.error);
         return result;
     }
-    async voiceTool(tenantId, suppliedSecret, body) {
-        if (!this.appService.validateVoiceToolSecret(tenantId, String(suppliedSecret || ''))) {
-            throw new common_1.UnauthorizedException('Voice tool authentication failed');
-        }
-        const result = this.appService.voiceTool(tenantId, body);
-        if ('error' in result && result.error === 'Clinic not found.')
+    async exotelVoicebotWebhook(tenantId, authorization, body) {
+        const result = await this.appService.ingestExotelVoicebotWebhook(tenantId, authorization, body);
+        if ('error' in result && result.error === 'Webhook authentication failed.')
+            throw new common_1.UnauthorizedException(result.error);
+        if ('error' in result)
+            throw new common_1.BadRequestException(result.error);
+        return { http_code: 200, response: { data: result } };
+    }
+    listExotelCalls(tenantId) {
+        const calls = this.appService.listExotelCalls(tenantId);
+        if (!calls)
             throw new common_1.NotFoundException('Clinic not found');
+        return { calls };
+    }
+    async syncExotelCalls(tenantId, body) {
+        const result = await this.appService.syncExotelCalls(tenantId, String(body?.start_date || ''), String(body?.end_date || ''), body?.after ? String(body.after) : undefined);
+        if (result === null)
+            throw new common_1.NotFoundException('Clinic not found');
+        if ('error' in result)
+            throw new common_1.BadGatewayException(result.error);
         return result;
+    }
+    async getExotelCallRecording(tenantId, callSid) {
+        const result = await this.appService.getExotelCallRecording(tenantId, callSid);
+        if ('error' in result && result.error === 'Call not found.')
+            throw new common_1.NotFoundException(result.error);
+        if ('error' in result)
+            throw new common_1.BadGatewayException(result.error);
+        return result;
+    }
+    async bookExotelCall(tenantId, callSid, body) {
+        const result = await this.appService.bookExotelCall(tenantId, callSid, body);
+        if ('error' in result && result.error === 'Call not found.')
+            throw new common_1.NotFoundException(result.error);
+        if ('error' in result)
+            throw new common_1.BadRequestException(result.error);
+        return result;
+    }
+    async voiceTool(tenantId, suppliedSecret, body, authorizationHeader) {
+        const started = node_perf_hooks_1.performance.now();
+        const traceId = (0, node_crypto_1.randomUUID)();
+        const actionValue = String(body?.action || '').trim().toLowerCase();
+        const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
+        let authenticationMs = 0;
+        let dispatchMs = 0;
+        let outcome = 'success';
+        try {
+            const authStarted = node_perf_hooks_1.performance.now();
+            const authorization = String(authorizationHeader || '').trim();
+            const bearerMatch = /^Bearer\s+([^\s]+)$/i.exec(authorization);
+            const bodyCredential = String(body?.tool_secret || body?.['x-voice-tool-secret'] || '').trim();
+            const credential = String(suppliedSecret || '').trim() || bearerMatch?.[1] || bodyCredential;
+            const authenticated = this.appService.validateVoiceToolSecret(tenantId, credential);
+            authenticationMs = node_perf_hooks_1.performance.now() - authStarted;
+            if (!authenticated)
+                throw new common_1.UnauthorizedException('Voice tool authentication failed');
+            const toolPayload = body && typeof body === 'object' ? { ...body } : {};
+            delete toolPayload.tool_secret;
+            delete toolPayload['x-voice-tool-secret'];
+            const dispatchStarted = node_perf_hooks_1.performance.now();
+            const result = await this.appService.voiceTool(tenantId, toolPayload);
+            dispatchMs = node_perf_hooks_1.performance.now() - dispatchStarted;
+            if ('error' in result && result.error === 'Clinic not found.')
+                throw new common_1.NotFoundException('Clinic not found');
+            if ('error' in result && result.unavailable === true) {
+                throw new common_1.ServiceUnavailableException(`${result.error} Retry with the same request_id.`);
+            }
+            if ('error' in result)
+                throw new common_1.BadRequestException(result.error);
+            return result;
+        }
+        catch (error) {
+            outcome = error instanceof common_1.ServiceUnavailableException ? 'dependency_unavailable'
+                : error instanceof common_1.UnauthorizedException ? 'unauthorized'
+                    : error instanceof common_1.BadRequestException ? 'rejected'
+                        : 'error';
+            throw error;
+        }
+        finally {
+            this.logger.log(JSON.stringify({
+                event: 'voice_tool.request_timing', trace_id: traceId, tenant_id: tenantId, action,
+                authentication_ms: Number(authenticationMs.toFixed(2)), dispatch_ms: Number(dispatchMs.toFixed(2)),
+                total_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), outcome,
+            }));
+        }
     }
     updateSubscription(tenantId, body) {
         if (body.subscription_status && !['active', 'paused'].includes(body.subscription_status)) {
@@ -456,7 +562,7 @@ let AppController = class AppController {
             if (!response.ok || !data.appointment) {
                 throw new common_1.BadGatewayException(data.detail || 'Python agent could not complete the booking');
             }
-            const appointment = this.appService.addBooking(tenantId, data.appointment);
+            const appointment = await this.appService.addBooking(tenantId, data.appointment);
             if (!appointment)
                 throw new common_1.BadRequestException('Tenant not found');
             if ('error' in appointment)
@@ -584,6 +690,16 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], AppController.prototype, "updateTenant", null);
 __decorate([
+    (0, common_1.Put)('api/tenants/:tenantId/password'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('super_admin'),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, TenantPasswordDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "setTenantAdminPassword", null);
+__decorate([
     (0, common_1.Put)('api/tenants/:tenantId/telephony'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.Roles)('super_admin'),
@@ -612,12 +728,66 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], AppController.prototype, "verifyExotelConnection", null);
 __decorate([
+    (0, common_1.Post)('api/exotel/voicebot/webhooks/:tenantId'),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Headers)('authorization')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "exotelVoicebotWebhook", null);
+__decorate([
+    (0, common_1.Get)('api/tenants/:tenantId/exotel/calls'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "listExotelCalls", null);
+__decorate([
+    (0, common_1.Post)('api/tenants/:tenantId/exotel/calls/sync'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "syncExotelCalls", null);
+__decorate([
+    (0, common_1.Get)('api/tenants/:tenantId/exotel/calls/:callSid/recording'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Param)('callSid')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "getExotelCallRecording", null);
+__decorate([
+    (0, common_1.Post)('api/tenants/:tenantId/exotel/calls/:callSid/book'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Param)('callSid')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "bookExotelCall", null);
+__decorate([
     (0, common_1.Post)('api/voice/tools/:tenantId'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Headers)('x-voice-tool-secret')),
     __param(2, (0, common_1.Body)()),
+    __param(3, (0, common_1.Headers)('authorization')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:paramtypes", [String, String, Object, String]),
     __metadata("design:returntype", Promise)
 ], AppController.prototype, "voiceTool", null);
 __decorate([
@@ -728,7 +898,7 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], AppController.prototype, "triggerOrchestration", null);
-exports.AppController = AppController = __decorate([
+exports.AppController = AppController = AppController_1 = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [app_service_1.AppService, jwt_1.JwtService])
 ], AppController);

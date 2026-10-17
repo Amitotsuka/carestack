@@ -108,6 +108,62 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   }
 });
 
+test('availability accepts the Exotel schema fields and Hinglish dates without inventing a doctor', async () => {
+  const { AppService } = require('../dist/app.service.js');
+  const service = Object.create(AppService.prototype);
+  process.env.VOICE_TOOL_SECRET = 'test-master-secret-that-is-at-least-32-characters';
+  service.tenants = {
+    'tenant-skycare': {
+      id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      voice_agent: {
+        enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata',
+        clinic_context: { doctors: ['Dr. Rao'], services: [], faqs: [], languages: ['Hindi', 'English'] },
+      },
+    },
+  };
+  service.persistState = () => {};
+
+  // This is the argument shape the Exotel schema must send for “aaj 11 baje”.
+  const hinglishDate = service.normalizeVoiceDate('tenant-skycare', 'aaj');
+  assert.match(hinglishDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(service.normalizeVoiceTime('11 baje'), '11:00');
+
+  const available = await service.voiceTool('tenant-skycare', {
+    action: 'availability', date: 'kal', time: '11 baje', doctor_name: '',
+  });
+  assert.equal(available.date, service.normalizeVoiceDate('tenant-skycare', 'kal'));
+  assert.equal(available.time, '11:00');
+  assert.equal(available.available, true);
+  assert.equal(available.doctor_name, 'Dr. Rao');
+  assert.deepEqual(available.available_doctors, ['Dr. Rao']);
+
+  const noDoctorConfigured = {
+    id: 'tenant-empty', name: 'No Doctors', admin_phone: '+919876543210', patients: [], bookings: [],
+    voice_agent: { enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata', clinic_context: { doctors: [] } },
+  };
+  service.tenants[noDoctorConfigured.id] = noDoctorConfigured;
+  const noDoctor = await service.voiceTool('tenant-empty', {
+    action: 'availability', date: 'kal', time: '11 baje', doctor_name: '',
+  });
+  assert.equal(noDoctor.available, false);
+  assert.match(noDoctor.message, /No doctors are configured/);
+  assert.equal(noDoctor.doctor_name, undefined);
+});
+
+test('availability rejects missing or wrongly typed required tool arguments', async () => {
+  const { AppService } = require('../dist/app.service.js');
+  const service = Object.create(AppService.prototype);
+  service.tenants = {
+    'tenant-skycare': {
+      id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      voice_agent: { enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata', clinic_context: { doctors: ['Dr. Rao'] } },
+    },
+  };
+  assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', time: '11:00' })).error, /date is required as a string/);
+  assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', date: 'tomorrow' })).error, /time is required as a string/);
+  assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', date: 'tomorrow', time: '11:00', doctor_name: 42 })).error, /doctor_name must be a string/);
+});
+
 test('clinic context is bounded, persisted, and exposed through safe FAQ lookup', async () => {
   const { AppService } = require('../dist/app.service.js');
   const service = Object.create(AppService.prototype);
@@ -128,7 +184,6 @@ test('clinic context is bounded, persisted, and exposed through safe FAQ lookup'
 
 test('voice booking does not report success when appointment persistence fails', async () => {
   const { AppService } = require('../dist/app.service.js');
-  const { AppController } = require('../dist/app.controller.js');
   const service = Object.create(AppService.prototype);
   process.env.VOICE_TOOL_SECRET = 'test-master-secret-that-is-at-least-32-characters';
   service.tenants = {
@@ -139,14 +194,46 @@ test('voice booking does not report success when appointment persistence fails',
   };
   service.pendingPostgresWrite = Promise.resolve();
   service.persistState = () => { service.pendingPostgresWrite = Promise.reject(new Error('database unavailable')); };
-  const controller = new AppController(service, null);
-  const secret = service.getVoiceToolSecret('tenant-skycare');
   const booking = {
     action: 'book', request_id: 'db-failure-001', confirmed: true, patient_name: 'Test Patient',
     phone_number: '+919876543210', doctor_name: 'Dr. Test', date: '2030-04-10', time: '11:00', reason: 'Consultation',
   };
-  await assert.rejects(controller.voiceTool('tenant-skycare', secret, booking), /database unavailable/);
+  const result = await service.voiceTool('tenant-skycare', booking);
+  assert.equal(result.unavailable, true);
+  assert.match(result.error, /booking was not confirmed/);
+  assert.equal(result.appointment, undefined);
   assert.equal(service.tenants['tenant-skycare'].bookings.length, 0);
+});
+
+test('Postgres full-state writes coalesce queued snapshots while preserving the latest state', async () => {
+  const { AppService } = require('../dist/app.service.js');
+  const service = Object.create(AppService.prototype);
+  const writtenPayloads = [];
+  let releaseFirstWrite;
+  service.pendingPostgresWrite = Promise.resolve();
+  service.postgres = {
+    query: async (_sql, params) => {
+      writtenPayloads.push(params[0]);
+      if (writtenPayloads.length === 1) await new Promise((resolve) => { releaseFirstWrite = resolve; });
+      return { rows: [] };
+    },
+  };
+  service.tenants = { 'tenant-skycare': { current_value: 0 } };
+  service.planCatalog = [];
+  service.clinicInterests = [];
+
+  service.persistState();
+  await new Promise((resolve) => setImmediate(resolve));
+  service.tenants['tenant-skycare'].current_value = 1;
+  service.persistState();
+  service.tenants['tenant-skycare'].current_value = 2;
+  service.persistState();
+  releaseFirstWrite();
+  await service.waitForPendingPersistence();
+
+  assert.equal(writtenPayloads.length, 2);
+  assert.equal(JSON.parse(writtenPayloads[0]).tenants['tenant-skycare'].current_value, 0);
+  assert.equal(JSON.parse(writtenPayloads[1]).tenants['tenant-skycare'].current_value, 2);
 });
 
 test('Sarvam deployment adapter sends the clinic number and configured inbound hours', async () => {

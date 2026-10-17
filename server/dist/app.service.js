@@ -8,7 +8,9 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 const node_crypto_1 = require("node:crypto");
+const node_perf_hooks_1 = require("node:perf_hooks");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const pg_1 = require("pg");
 const defaultClinicContext = { address: '', services: [], doctors: [], fees: '', languages: ['Hindi', 'Hinglish', 'English'], instructions: '', faqs: [] };
 const defaultVoiceAgent = { enabled: true, availability: 'business_hours', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', appointment_duration_minutes: 30, clinic_context: defaultClinicContext };
 const defaultTelephony = { provider: 'exotel', voice_provider: 'sarvam', exotel_voicebot_id: '', phone_number: '', account_sid: '', app_id: '', region: 'mumbai', enabled: false };
@@ -16,14 +18,26 @@ class AppService {
     constructor() {
         this.tenants = {};
         this.clinicInterests = [];
-        this.superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'superadmin@hospital.ai').trim().toLowerCase();
-        this.superAdminPasswordHash = bcryptjs_1.default.hashSync(process.env.SUPER_ADMIN_PASSWORD || 'admin123', 12);
+        this.superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'superadmin@hospital.ai')).trim().toLowerCase();
+        this.superAdminPasswordHash = process.env.SUPER_ADMIN_PASSWORD
+            ? bcryptjs_1.default.hashSync(process.env.SUPER_ADMIN_PASSWORD, 12)
+            : process.env.NODE_ENV === 'production' ? '' : bcryptjs_1.default.hashSync('admin123', 12);
         this.planCatalog = [
             { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3 },
             { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
             { id: 'enterprise', name: 'Enterprise', monthly_price: 39999, annual_price: 399990, clinic_limit: null, user_limit: null },
         ];
-        const databasePath = process.env.DATABASE_PATH || node_path_1.default.resolve(__dirname, '..', 'data', 'hospital.sqlite');
+        this.pendingPostgresWrite = Promise.resolve();
+        this.postgresWriteScheduled = false;
+        const databaseUrl = process.env.DATABASE_URL?.trim();
+        if (databaseUrl) {
+            this.postgres = new pg_1.Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 2500, statement_timeout: 4500 });
+            return;
+        }
+        const defaultDatabasePath = process.env.NODE_ENV === 'production'
+            ? '/tmp/hospital.sqlite'
+            : node_path_1.default.resolve(__dirname, '..', 'data', 'hospital.sqlite');
+        const databasePath = process.env.DATABASE_PATH || defaultDatabasePath;
         node_fs_1.default.mkdirSync(node_path_1.default.dirname(databasePath), { recursive: true });
         this.database = new better_sqlite3_1.default(databasePath);
         this.database.pragma('journal_mode = WAL');
@@ -38,23 +52,55 @@ class AppService {
     `);
         const savedState = this.database.prepare('SELECT payload FROM app_state WHERE id = 1').get();
         if (savedState) {
-            const state = JSON.parse(savedState.payload);
-            this.tenants = state.tenants || {};
-            this.planCatalog = state.planCatalog || this.planCatalog;
-            this.clinicInterests = state.clinicInterests || [];
-            this.migratePasswordHashes();
+            if (this.loadState(savedState.payload))
+                this.persistState();
         }
         else {
             if (process.env.NODE_ENV !== 'production')
                 this.seed();
             this.persistState();
         }
-        if (process.env.NODE_ENV === 'production') {
-            const hasDemoPassword = Object.values(this.tenants).some((tenant) => tenant.users.some((user) => bcryptjs_1.default.compareSync('admin123', user.password_hash)));
-            if (hasDemoPassword) {
-                throw new Error('A tenant still uses the demo password. Rotate credentials or configure a clean production DATABASE_PATH before startup.');
+    }
+    async onModuleInit() {
+        if (!this.postgres)
+            return;
+        const started = node_perf_hooks_1.performance.now();
+        let outcome = 'success';
+        try {
+            await this.postgres.query(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          payload JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL
+        )
+      `);
+            const result = await this.postgres.query('SELECT payload FROM app_state WHERE id = 1');
+            if (result.rows[0]) {
+                if (this.loadState(result.rows[0].payload))
+                    await this.writePostgresState();
+            }
+            else {
+                await this.writePostgresState();
             }
         }
+        catch (error) {
+            outcome = 'failure';
+            throw error;
+        }
+        finally {
+            console.info(JSON.stringify({ event: 'postgres.startup_timing', duration_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), outcome }));
+        }
+    }
+    async onModuleDestroy() {
+        await this.pendingPostgresWrite;
+        await this.postgres?.end();
+    }
+    loadState(payload) {
+        const state = (typeof payload === 'string' ? JSON.parse(payload) : payload);
+        this.tenants = state.tenants || {};
+        this.planCatalog = state.planCatalog || this.planCatalog;
+        this.clinicInterests = state.clinicInterests || [];
+        return this.migratePasswordHashes();
     }
     migratePasswordHashes() {
         let migrated = false;
@@ -74,18 +120,61 @@ class AppService {
                     delete legacyUser.password;
                     migrated = true;
                 }
+                if (process.env.NODE_ENV === 'production' && bcryptjs_1.default.compareSync('admin123', user.password_hash)) {
+                    user.password_hash = bcryptjs_1.default.hashSync((0, node_crypto_1.randomBytes)(24).toString('base64url'), 12);
+                    migrated = true;
+                }
             });
         });
-        if (migrated)
-            this.persistState();
+        return migrated;
     }
     persistState() {
         const payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests });
+        if (this.postgres) {
+            this.pendingPostgresPayload = payload;
+            if (!this.postgresWriteScheduled) {
+                this.postgresWriteScheduled = true;
+                this.pendingPostgresWrite = this.pendingPostgresWrite
+                    .catch(() => undefined)
+                    .then(() => this.flushPendingPostgresWrites());
+            }
+            return;
+        }
         this.database.prepare(`
       INSERT INTO app_state (id, payload, updated_at)
       VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
     `).run(payload, new Date().toISOString());
+    }
+    async flushPendingPostgresWrites() {
+        try {
+            while (this.pendingPostgresPayload !== undefined) {
+                const payload = this.pendingPostgresPayload;
+                this.pendingPostgresPayload = undefined;
+                await this.writePostgresState(payload);
+            }
+        }
+        finally {
+            this.postgresWriteScheduled = false;
+        }
+    }
+    async writePostgresState(payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests })) {
+        if (!this.postgres)
+            return;
+        const started = node_perf_hooks_1.performance.now();
+        try {
+            await this.postgres.query(`
+        INSERT INTO app_state (id, payload, updated_at)
+        VALUES (1, $1::jsonb, NOW())
+        ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+      `, [payload]);
+            console.info(JSON.stringify({ event: 'postgres.state_write_timing', duration_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), payload_bytes: Buffer.byteLength(payload), outcome: 'success' }));
+        }
+        catch (error) {
+            const code = error && typeof error === 'object' && 'code' in error ? String(error.code).slice(0, 32) : 'unknown';
+            console.error(JSON.stringify({ event: 'postgres.state_write_timing', duration_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), payload_bytes: Buffer.byteLength(payload), outcome: 'failure', error_code: code }));
+            throw error;
+        }
     }
     seed() {
         const tenantId = 'tenant-skycare';
@@ -141,7 +230,7 @@ class AppService {
         };
     }
     async login(email, password) {
-        if (email === this.superAdminEmail && await bcryptjs_1.default.compare(password, this.superAdminPasswordHash)) {
+        if (this.superAdminEmail && this.superAdminPasswordHash && email === this.superAdminEmail && await bcryptjs_1.default.compare(password, this.superAdminPasswordHash)) {
             return {
                 user_id: 'super-admin',
                 role: 'super_admin',
@@ -298,9 +387,12 @@ class AppService {
         const adminId = `user-${tenantId}`;
         const requestedPlan = String(payload.plan || 'growth').toLowerCase();
         const plan = this.planCatalog.some((item) => item.id === requestedPlan) ? requestedPlan : 'growth';
-        const temporaryPassword = process.env.NODE_ENV === 'production'
-            ? (0, node_crypto_1.randomBytes)(18).toString('base64url')
-            : process.env.TENANT_DEFAULT_PASSWORD || 'admin123';
+        const adminPasswordWasProvided = typeof payload.admin_password === 'string' && payload.admin_password.length > 0;
+        const temporaryPassword = adminPasswordWasProvided
+            ? payload.admin_password
+            : process.env.NODE_ENV === 'production'
+                ? (0, node_crypto_1.randomBytes)(18).toString('base64url')
+                : process.env.TENANT_DEFAULT_PASSWORD || 'admin123';
         const tenant = {
             id: tenantId,
             name: payload.tenant_name,
@@ -336,10 +428,11 @@ class AppService {
             tenant_name: tenant.name,
             domain: tenant.domain,
             admin_email: tenant.admin_email,
+            password_set: adminPasswordWasProvided,
             plan: tenant.plan,
             subscription_status: tenant.subscription_status,
             billing_cycle: tenant.billing_cycle,
-            temporary_password: temporaryPassword,
+            ...(adminPasswordWasProvided ? {} : { temporary_password: temporaryPassword }),
         };
     }
     updateTenant(tenantId, payload) {
@@ -385,6 +478,19 @@ class AppService {
         this.updateAdminPrice(tenant);
         this.persistState();
         return this.listTenants().find((item) => item.id === tenantId);
+    }
+    async setTenantAdminPassword(tenantId, password) {
+        const tenant = this.tenants[tenantId];
+        if (!tenant)
+            return 'not_found';
+        const adminUser = tenant.users.find((user) => user.email === tenant.admin_email)
+            || tenant.users.find((user) => user.role === 'tenant_admin');
+        if (!adminUser)
+            return 'admin_not_found';
+        adminUser.password_hash = bcryptjs_1.default.hashSync(password, 12);
+        this.persistState();
+        await this.pendingPostgresWrite;
+        return 'updated';
     }
     updateVoiceAgent(tenantId, payload) {
         const tenant = this.tenants[tenantId];
@@ -490,55 +596,82 @@ class AppService {
         const tenant = this.tenants[tenantId];
         if (!tenant)
             return null;
-        const phoneNumber = String(payload.phone_number || '').trim().replace(/[\s()-]/g, '');
-        const accountSid = String(payload.account_sid || '').trim();
-        const appId = String(payload.app_id || '').trim();
-        const region = payload.region === 'singapore' ? 'singapore' : 'mumbai';
         const voiceProvider = payload.voice_provider === 'exotel_voicebot' ? 'exotel_voicebot' : payload.voice_provider === 'sarvam' || !payload.voice_provider ? 'sarvam' : null;
         if (!voiceProvider)
-            return false;
-        const exotelVoicebotId = String(payload.exotel_voicebot_id || '').trim();
+            return { error: 'Choose a supported AI voice provider.' };
         const existing = tenant.telephony;
+        const configFields = ['phone_number', 'account_sid', 'app_id', 'region', 'enabled', 'exotel_voicebot_id', 'sarvam_org_id', 'sarvam_workspace_id', 'sarvam_agent_id', 'sarvam_agent_version', 'sarvam_connection_id'];
+        const sanitizeProviderConfig = (value) => Object.fromEntries(configFields.filter((field) => Object.prototype.hasOwnProperty.call(value || {}, field)).map((field) => [field, value[field]]));
+        const providerConfigs = Object.fromEntries(Object.entries(existing?.provider_configs || {}).map(([name, value]) => [name, sanitizeProviderConfig(value)]));
+        const legacyProvider = existing?.voice_provider || 'sarvam';
+        if (existing && !providerConfigs[legacyProvider])
+            providerConfigs[legacyProvider] = {
+                phone_number: existing.phone_number, account_sid: existing.account_sid, app_id: existing.app_id,
+                region: existing.region, enabled: existing.enabled, exotel_voicebot_id: existing.exotel_voicebot_id,
+                sarvam_org_id: existing.sarvam_org_id, sarvam_workspace_id: existing.sarvam_workspace_id,
+                sarvam_agent_id: existing.sarvam_agent_id, sarvam_agent_version: existing.sarvam_agent_version,
+                sarvam_connection_id: existing.sarvam_connection_id,
+            };
+        if (payload.provider_configs && typeof payload.provider_configs === 'object') {
+            for (const name of ['sarvam', 'exotel_voicebot']) {
+                if (payload.provider_configs[name] && typeof payload.provider_configs[name] === 'object') {
+                    providerConfigs[name] = { ...(providerConfigs[name] || {}), ...sanitizeProviderConfig(payload.provider_configs[name]) };
+                }
+            }
+        }
+        const incoming = payload.provider_config && typeof payload.provider_config === 'object' ? payload.provider_config : payload;
+        const selectedFields = Object.fromEntries(configFields.filter((field) => Object.prototype.hasOwnProperty.call(incoming, field)).map((field) => [field, incoming[field]]));
+        const selected = { ...(providerConfigs[voiceProvider] || {}), ...selectedFields };
+        const phoneNumber = String(selected.phone_number || '').trim().replace(/[\s()-]/g, '');
+        const accountSid = String(selected.account_sid || '').trim();
+        const appId = String(selected.app_id || '').trim();
+        const region = selected.region === 'singapore' ? 'singapore' : 'mumbai';
+        const exotelVoicebotId = String(selected.exotel_voicebot_id || '').trim();
         const apiKey = String(payload.exotel_api_key || '').trim();
         const apiToken = String(payload.exotel_api_token || '').trim();
         if (apiKey.length > 512 || apiToken.length > 512)
-            return false;
-        if (existing?.sarvam_deployment_id && (voiceProvider !== 'sarvam' ||
-            existing.phone_number !== phoneNumber || existing.account_sid !== accountSid || existing.app_id !== appId || existing.region !== region ||
-            existing.sarvam_org_id !== String(payload.sarvam_org_id || '').trim() || existing.sarvam_workspace_id !== String(payload.sarvam_workspace_id || '').trim() ||
-            existing.sarvam_agent_id !== String(payload.sarvam_agent_id || '').trim() || existing.sarvam_agent_version !== (Number(payload.sarvam_agent_version) || undefined) ||
-            existing.sarvam_connection_id !== String(payload.sarvam_connection_id || '').trim()))
-            return false;
-        if (phoneNumber && !/^\+[1-9]\d{7,14}$/.test(phoneNumber))
-            return false;
-        if (phoneNumber && Object.values(this.tenants).some((item) => item.id !== tenantId &&
-            (item.telephony?.phone_number || '').replace(/[\s()-]/g, '') === phoneNumber))
-            return false;
-        let enabled = tenant.telephony?.enabled || false;
-        if (payload.enabled === false)
+            return { error: 'Exotel API key and token must be 512 characters or fewer.' };
+        if (voiceProvider === 'sarvam' && existing?.sarvam_deployment_id) {
+            const deployedSarvam = existing.provider_configs?.sarvam;
+            if (deployedSarvam && (deployedSarvam.phone_number !== phoneNumber || deployedSarvam.account_sid !== accountSid || deployedSarvam.app_id !== appId || deployedSarvam.region !== region ||
+                deployedSarvam.sarvam_org_id !== String(selected.sarvam_org_id || '').trim() || deployedSarvam.sarvam_workspace_id !== String(selected.sarvam_workspace_id || '').trim() ||
+                deployedSarvam.sarvam_agent_id !== String(selected.sarvam_agent_id || '').trim() || deployedSarvam.sarvam_agent_version !== (Number(selected.sarvam_agent_version) || undefined) ||
+                deployedSarvam.sarvam_connection_id !== String(selected.sarvam_connection_id || '').trim()))
+                return { error: 'This Sarvam deployment is already active. Stop the deployment in Sarvam before changing its phone, connection, or agent settings.' };
+        }
+        if (!phoneNumber || !/^\+[1-9]\d{7,14}$/.test(phoneNumber))
+            return { error: 'Enter the clinic Exophone in international E.164 format, for example +919876543210.' };
+        if (Object.values(this.tenants).some((item) => item.id !== tenantId &&
+            Object.values(item.telephony?.provider_configs || { [item.telephony?.voice_provider || 'sarvam']: item.telephony }).some((config) => (config?.phone_number || '').replace(/[\s()-]/g, '') === phoneNumber))) {
+            return { error: 'This phone number is already assigned to another clinic. Each clinic must have its own unique Exophone.' };
+        }
+        let enabled = Boolean(selected.enabled);
+        if (selected.enabled === false)
             enabled = false;
-        if (payload.enabled === true) {
+        if (selected.enabled === true) {
             if (voiceProvider === 'exotel_voicebot') {
-                if (!phoneNumber || !accountSid || !appId || !exotelVoicebotId)
-                    return false;
+                if (!accountSid || !appId || !exotelVoicebotId)
+                    return { error: 'For Exotel Voicebot, enter the Account SID, App / Flow ID, and Voicebot ID before enabling inbound calls.' };
                 enabled = true;
             }
             else {
-                if (!tenant.telephony?.sarvam_deployment_id)
-                    return false;
+                if (!existing?.sarvam_deployment_id)
+                    return { error: 'Sarvam inbound calls cannot be enabled until the Sarvam deployment is active. Save the settings, then use Activate inbound calls.' };
                 enabled = true;
             }
         }
+        const savedSelected = { ...selected, phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled, exotel_voicebot_id: exotelVoicebotId };
+        providerConfigs[voiceProvider] = savedSelected;
         tenant.telephony = {
             provider: 'exotel', voice_provider: voiceProvider, exotel_voicebot_id: exotelVoicebotId,
-            phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled,
+            phone_number: phoneNumber, account_sid: accountSid, app_id: appId, region, enabled, provider_configs: providerConfigs,
             exotel_api_key_encrypted: apiKey ? this.encryptCredential(apiKey) : existing?.exotel_api_key_encrypted,
             exotel_api_token_encrypted: apiToken ? this.encryptCredential(apiToken) : existing?.exotel_api_token_encrypted,
-            sarvam_org_id: String(payload.sarvam_org_id || '').trim(),
-            sarvam_workspace_id: String(payload.sarvam_workspace_id || '').trim(),
-            sarvam_agent_id: String(payload.sarvam_agent_id || '').trim(),
-            sarvam_agent_version: Number(payload.sarvam_agent_version) || undefined,
-            sarvam_connection_id: String(payload.sarvam_connection_id || '').trim(),
+            sarvam_org_id: String(savedSelected.sarvam_org_id || '').trim(),
+            sarvam_workspace_id: String(savedSelected.sarvam_workspace_id || '').trim(),
+            sarvam_agent_id: String(savedSelected.sarvam_agent_id || '').trim(),
+            sarvam_agent_version: Number(savedSelected.sarvam_agent_version) || undefined,
+            sarvam_connection_id: String(savedSelected.sarvam_connection_id || '').trim(),
             sarvam_deployment_id: tenant.telephony?.sarvam_deployment_id,
         };
         this.persistState();
@@ -552,6 +685,12 @@ class AppService {
         const exotelCredentialsConfigured = Boolean((config.exotel_api_key_encrypted && config.exotel_api_token_encrypted) || (process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN));
         return {
             ...publicConfig,
+            provider_configs: config.provider_configs || { [voiceProvider]: {
+                    phone_number: config.phone_number, account_sid: config.account_sid, app_id: config.app_id, region: config.region,
+                    enabled: config.enabled, exotel_voicebot_id: config.exotel_voicebot_id,
+                    sarvam_org_id: config.sarvam_org_id, sarvam_workspace_id: config.sarvam_workspace_id,
+                    sarvam_agent_id: config.sarvam_agent_id, sarvam_agent_version: config.sarvam_agent_version, sarvam_connection_id: config.sarvam_connection_id,
+                } },
             voice_provider: voiceProvider,
             enabled: Boolean(config.enabled),
             exotel_credentials_configured: exotelCredentialsConfigured,
@@ -562,8 +701,8 @@ class AppService {
             credentials_configured: voiceProvider === 'exotel_voicebot'
                 ? Boolean(process.env.EXOTEL_API_KEY && process.env.EXOTEL_API_TOKEN && (process.env.VOICE_TOOL_SECRET || '').length >= 32)
                 : Boolean(process.env.SARVAM_API_KEY && (process.env.VOICE_TOOL_SECRET || '').length >= 32),
-            deployment_status: config.sarvam_deployment_id ? 'active' : voiceProvider === 'exotel_voicebot'
-                ? (config.enabled && config.exotel_voicebot_id && config.app_id ? 'active' : config.exotel_voicebot_id ? 'exotel_console_setup' : 'exotel_bot_required') : 'not_deployed',
+            deployment_status: voiceProvider === 'sarvam' ? (config.sarvam_deployment_id ? 'active' : 'not_deployed') :
+                (config.enabled && config.exotel_voicebot_id && config.app_id ? 'active' : config.exotel_voicebot_id ? 'exotel_console_setup' : 'exotel_bot_required'),
         };
     }
     async verifyExotelConnection(tenantId) {
@@ -630,6 +769,8 @@ class AppService {
         }
     }
     validateVoiceToolSecret(tenantId, suppliedSecret) {
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(tenantId) || tenantId.length > 64)
+            return false;
         const master = process.env.VOICE_TOOL_SECRET || '';
         if (master.length < 32)
             return false;
@@ -638,6 +779,8 @@ class AppService {
         return supplied.length === expected.length && (0, node_crypto_1.timingSafeEqual)(supplied, expected);
     }
     getVoiceToolSecret(tenantId) {
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(tenantId) || tenantId.length > 64)
+            return '';
         const master = process.env.VOICE_TOOL_SECRET || '';
         return master.length >= 32 ? (0, node_crypto_1.createHmac)('sha256', master).update(tenantId).digest('hex') : '';
     }
@@ -683,6 +826,7 @@ class AppService {
                 return { error: `Sarvam deployment failed (${response.status}). Check the Sarvam agent, Exotel connection, and phone number configuration.` };
             config.sarvam_deployment_id = result.deployment_id;
             config.enabled = true;
+            config.provider_configs = { ...(config.provider_configs || {}), sarvam: { ...(config.provider_configs?.sarvam || {}), enabled: true } };
             this.persistState();
             return { deployment_id: result.deployment_id, telephony: this.publicTelephony(config) };
         }
@@ -690,11 +834,30 @@ class AppService {
             return { error: 'Could not reach Sarvam. No deployment was confirmed; check Sarvam before retrying to avoid duplicates.' };
         }
     }
-    voiceTool(tenantId, payload) {
+    async voiceTool(tenantId, payload) {
+        const started = node_perf_hooks_1.performance.now();
+        const actionValue = String(payload?.action || '').trim().toLowerCase();
+        const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
+        let outcome = 'success';
+        try {
+            const result = await this.dispatchVoiceTool(tenantId, payload);
+            if (result && typeof result === 'object' && 'error' in result)
+                outcome = result.unavailable ? 'dependency_unavailable' : 'rejected';
+            return result;
+        }
+        catch (error) {
+            outcome = 'error';
+            throw error;
+        }
+        finally {
+            console.info(JSON.stringify({ event: 'voice_tool.service_timing', tenant_id: tenantId, action, duration_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), outcome }));
+        }
+    }
+    async dispatchVoiceTool(tenantId, payload) {
         const tenant = this.tenants[tenantId];
         if (!tenant)
             return { error: 'Clinic not found.' };
-        const action = String(payload?.action || '');
+        const action = String(payload?.action ?? '').trim().toLowerCase();
         if (action === 'clinic_info') {
             const hours = this.getVoiceAgent(tenantId);
             const context = hours.clinic_context;
@@ -705,7 +868,7 @@ class AppService {
                 appointment_duration_minutes: this.appointmentDuration(tenantId),
                 address: context.address || null, services: context.services, fees: context.fees || null, doctors: context.doctors,
                 languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
-                response_policy: 'Only values returned here are approved. Offer a human receptionist for other clinic questions.',
+                response_policy: 'Only values returned here are approved. Accept natural date and time expressions. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. Offer a human receptionist for other clinic questions.',
             };
         }
         if (action === 'faq') {
@@ -716,50 +879,431 @@ class AppService {
             return match ? { matched: true, question: match.question, answer: match.answer, source: 'clinic-approved FAQ' } : { matched: false, handoff: true, message: 'No approved FAQ answer found. Offer clinic staff; do not guess.' };
         }
         if (action === 'availability') {
-            const date = String(payload.date || '');
-            const time = String(payload.time || '');
+            if (typeof payload?.date !== 'string' || !payload.date.trim()) {
+                return { error: 'date is required as a string, such as today, tomorrow, or YYYY-MM-DD.' };
+            }
+            if (typeof payload?.time !== 'string' || !payload.time.trim()) {
+                return { error: 'time is required as a string, for example 10 AM or 14:30.' };
+            }
+            if (payload?.doctor_name !== undefined && typeof payload.doctor_name !== 'string') {
+                return { error: 'doctor_name must be a string. Use an empty string when the caller has no doctor preference.' };
+            }
+            const date = this.normalizeVoiceDate(tenantId, payload.date);
+            const time = this.normalizeVoiceTime(payload.time);
             const doctor = String(payload.doctor_name || '').trim();
-            if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !this.isFutureClinicDate(tenantId, date, time) || !doctor)
-                return { error: 'Provide a future date, valid time, and doctor name.' };
+            if (!date)
+                return { error: 'Please provide a date such as today, tomorrow, or a calendar date.' };
+            if (!time)
+                return { error: 'Please provide an appointment time, for example 10 AM or 14:30.' };
+            if (!this.isFutureClinicDate(tenantId, date, time))
+                return { error: 'That time has passed. Please ask for a future appointment time.' };
             const policy = this.validateAgentBooking(tenantId, time);
             if (policy)
                 return { available: false, message: policy };
-            const conflict = this.findScheduleConflict(tenantId, date, time, doctor);
-            return { available: !conflict, date, time, duration_minutes: this.appointmentDuration(tenantId), doctor_name: doctor, source: 'clinic appointment calendar', message: conflict ? this.scheduleConflictMessage(tenantId, conflict) : 'No overlapping appointment is recorded for this doctor in the requested time window. Confirm with the caller before booking.' };
+            const candidates = doctor ? [doctor] : this.getClinicDoctorCandidates(tenantId);
+            if (!candidates.length)
+                return { available: false, date, time, message: 'No doctors are configured for this clinic yet. Please ask the clinic team to add its doctors before booking.' };
+            const matches = candidates.map((doctorName) => ({ doctor_name: doctorName, conflict: this.findScheduleConflict(tenantId, date, time, doctorName) }));
+            const selected = matches.find((candidate) => !candidate.conflict);
+            return {
+                available: Boolean(selected), date, time, duration_minutes: this.appointmentDuration(tenantId),
+                ...(selected ? { doctor_name: selected.doctor_name } : { doctor_name: doctor || undefined }),
+                available_doctors: matches.filter((candidate) => !candidate.conflict).map((candidate) => candidate.doctor_name),
+                source: 'clinic appointment calendar',
+                message: selected
+                    ? `The requested time is available with ${selected.doctor_name}. Tell the caller which doctor is available and get confirmation before booking.`
+                    : doctor && matches[0].conflict
+                        ? this.scheduleConflictMessage(tenantId, matches[0].conflict)
+                        : 'No configured doctor is free at that time. Ask the caller for another time.',
+            };
         }
         if (action === 'book') {
+            const requiredFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'date', 'time', 'reason'];
+            const missingFields = requiredFields.filter((field) => payload?.[field] === undefined || payload?.[field] === null || (typeof payload[field] === 'string' && !payload[field].trim()));
+            if (missingFields.length)
+                return { error: `Missing required booking fields: ${missingFields.join(', ')}.` };
             if (payload.confirmed !== true)
                 return { error: 'Caller confirmation is required before booking.' };
-            const requestId = String(payload.request_id || '');
+            const requestId = String(payload.request_id).trim();
             if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId))
-                return { error: 'A unique request_id is required for safe retries.' };
-            const date = String(payload.date || '');
-            const time = String(payload.time || '');
-            const patientName = String(payload.patient_name || '').trim();
-            const phone = String(payload.phone_number || '').trim();
+                return { error: 'request_id must be 8 to 80 letters, numbers, underscores, or hyphens.' };
+            const date = this.normalizeVoiceDate(tenantId, payload.date);
+            const time = this.normalizeVoiceTime(payload.time);
+            const patientName = String(payload.patient_name).trim();
+            const phone = String(payload.phone_number).trim();
             const doctor = String(payload.doctor_name || '').trim();
-            if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !this.isFutureClinicDate(tenantId, date, time) || patientName.length < 2 || !/^\+?[\d\s()-]{8,20}$/.test(phone) || !doctor)
-                return { error: 'Valid patient name, phone, doctor, future date, and time are required.' };
+            const reason = String(payload.reason).trim();
+            if (patientName.length < 2 || patientName.length > 120)
+                return { error: 'patient_name must be between 2 and 120 characters.' };
+            if (!/^\+?[\d\s()-]{8,20}$/.test(phone))
+                return { error: 'phone_number must contain a valid phone number.' };
+            if (doctor.length > 120)
+                return { error: 'doctor_name must be 120 characters or fewer.' };
+            if (reason.length > 500)
+                return { error: 'reason must be 500 characters or fewer.' };
+            if (!date || !time)
+                return { error: 'Provide a date such as today or tomorrow and a time such as 10 AM or 14:30.' };
+            if (!this.isFutureClinicDate(tenantId, date, time))
+                return { error: 'That time has passed. Please ask for a future appointment time.' };
             const id = `VOICE-${requestId}`;
             const prior = tenant.bookings.find((booking) => booking.id === id);
-            if (prior)
+            if (prior) {
+                await this.waitForPendingPersistence();
                 return { appointment: prior, idempotent_replay: true };
+            }
             const policy = this.validateAgentBooking(tenantId, time);
             if (policy)
                 return { error: policy };
             const duration = this.appointmentDuration(tenantId);
-            const conflict = this.findScheduleConflict(tenantId, date, time, doctor, duration);
+            let assignedDoctor = doctor;
+            if (!assignedDoctor) {
+                const availableDoctor = this.getClinicDoctorCandidates(tenantId)
+                    .find((candidate) => !this.findScheduleConflict(tenantId, date, time, candidate, duration));
+                if (!availableDoctor)
+                    return { error: 'No configured doctor is available at that time. Ask the caller for another time or contact the clinic.' };
+                return {
+                    booked: false, confirmation_required: true, doctor_name: availableDoctor, date, time,
+                    message: `No appointment was created. Offer ${availableDoctor} for this time and get the caller's confirmation. Then call book again with doctor_name set to ${availableDoctor}.`,
+                };
+            }
+            const conflict = this.findScheduleConflict(tenantId, date, time, assignedDoctor, duration);
             if (conflict)
                 return { error: this.scheduleConflictMessage(tenantId, conflict) };
-            const appointment = { id, patient_name: patientName, phone_number: phone, doctor_name: doctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason: String(payload.reason || 'Inbound voice appointment'), status: 'confirmed' };
-            const saved = this.addBooking(tenantId, appointment);
+            const appointment = { id, patient_name: patientName, phone_number: phone, doctor_name: assignedDoctor, appointment_date: date, appointment_time: time, duration_minutes: duration, reason, status: 'confirmed' };
+            let saved;
+            try {
+                saved = await this.addBooking(tenantId, appointment);
+            }
+            catch {
+                return { error: 'Appointment storage is temporarily unavailable; booking was not confirmed.', unavailable: true };
+            }
             if (!saved || 'error' in saved)
                 return { error: saved && 'error' in saved ? saved.error : 'Could not save appointment.' };
+            if (!saved.id)
+                return { error: 'Appointment persistence did not return an appointment ID.' };
             return { appointment: saved, idempotent_replay: false };
         }
         if (action === 'cancel' || action === 'reschedule')
             return { error: 'This appointment change is not enabled: patient verification and an authoritative scheduling integration are not configured. Offer a human receptionist.' };
         return { error: 'Unsupported action. Supported actions are clinic_info, faq, availability, and book.' };
+    }
+    async ingestExotelVoicebotWebhook(tenantId, authorizationHeader, payload) {
+        const tenant = this.tenants[tenantId];
+        const configuredUser = process.env.EXOTEL_VOICEBOT_WEBHOOK_USERNAME || '';
+        const configuredPassword = process.env.EXOTEL_VOICEBOT_WEBHOOK_PASSWORD || '';
+        const basicMatch = /^Basic\s+([A-Za-z0-9+/]+=*)$/i.exec(String(authorizationHeader || '').trim());
+        let authenticated = this.validateVoiceToolSecret(tenantId, String(payload?.custom_parameters?.carestack_webhook_token || '').trim());
+        if (configuredUser.length >= 16 && configuredPassword.length >= 32 && basicMatch) {
+            try {
+                const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf8');
+                const separator = decoded.indexOf(':');
+                const user = Buffer.from(separator >= 0 ? decoded.slice(0, separator) : '');
+                const password = Buffer.from(separator >= 0 ? decoded.slice(separator + 1) : '');
+                const expectedUser = Buffer.from(configuredUser);
+                const expectedPassword = Buffer.from(configuredPassword);
+                authenticated ||= user.length === expectedUser.length && password.length === expectedPassword.length && (0, node_crypto_1.timingSafeEqual)(user, expectedUser) && (0, node_crypto_1.timingSafeEqual)(password, expectedPassword);
+            }
+            catch {
+                authenticated = false;
+            }
+        }
+        if (!tenant || !authenticated)
+            return { error: 'Webhook authentication failed.' };
+        const callSid = String(payload?.metadata?.call_sid || payload?.external_id || '').trim();
+        const sessionId = String(payload?.session_id || '').trim();
+        if (!/^[A-Za-z0-9_-]{6,128}$/.test(callSid) || !sessionId || sessionId.length > 128)
+            return { error: 'A valid Exotel call SID and session_id are required.' };
+        const configuredAccount = String(tenant.telephony?.account_sid || '');
+        const configuredBot = String(tenant.telephony?.exotel_voicebot_id || '');
+        const eventAccount = String(payload?.account_id || '');
+        if (!configuredAccount || !configuredBot || String(payload?.bot_id || '') !== configuredBot || (eventAccount && eventAccount !== configuredAccount)) {
+            return { error: 'Exotel account or Voicebot does not match this clinic.' };
+        }
+        const calls = tenant.exotel_calls ||= [];
+        let call = calls.find((item) => item.call_sid === callSid);
+        if (!call) {
+            call = { call_sid: callSid, transcript_segments: [], updated_at: new Date().toISOString() };
+            calls.push(call);
+            if (calls.length > 100)
+                calls.splice(0, calls.length - 100);
+        }
+        call.session_id = sessionId;
+        if (payload?.conversation_id)
+            call.conversation_id = String(payload.conversation_id).slice(0, 128);
+        if (payload?.contact_uri)
+            call.caller_phone = String(payload.contact_uri).replace(/^sip:/i, '').split('@')[0].slice(0, 64);
+        if (payload?.landing_number)
+            call.landing_number = String(payload.landing_number).slice(0, 64);
+        if (payload?.session_state)
+            call.session_state = String(payload.session_state).slice(0, 40);
+        if (payload?.start_time)
+            call.started_at = String(payload.start_time).slice(0, 64);
+        if (payload?.end_time)
+            call.ended_at = String(payload.end_time).slice(0, 64);
+        const incomingSegments = (Array.isArray(payload?.events) ? payload.events : [])
+            .filter((event) => event?.event_type === 'transcript')
+            .flatMap((event) => Array.isArray(event?.event_data?.transcripts) ? event.event_data.transcripts : [])
+            .flatMap((transcript) => Array.isArray(transcript?.transcript_segments) ? transcript.transcript_segments : [])
+            .filter((segment) => typeof segment?.text === 'string' && segment.text.trim())
+            .map((segment) => ({
+            speaker: String(segment.speaker || 'unknown').slice(0, 32),
+            text: String(segment.text).trim().slice(0, 2000),
+            ...(segment.start_timestamp ? { start_timestamp: String(segment.start_timestamp).slice(0, 64) } : {}),
+            ...(segment.end_timestamp ? { end_timestamp: String(segment.end_timestamp).slice(0, 64) } : {}),
+        }));
+        for (const segment of incomingSegments) {
+            const duplicate = call.transcript_segments.some((existing) => existing.speaker === segment.speaker && existing.text === segment.text && existing.start_timestamp === segment.start_timestamp);
+            if (!duplicate && call.transcript_segments.length < 100)
+                call.transcript_segments.push(segment);
+        }
+        call.updated_at = new Date().toISOString();
+        this.persistState();
+        await this.waitForPendingPersistence();
+        return { accepted: true, call_sid: callSid, transcript_segments_saved: incomingSegments.length };
+    }
+    listExotelCalls(tenantId) {
+        const tenant = this.tenants[tenantId];
+        if (!tenant)
+            return null;
+        return [...(tenant.exotel_calls || [])]
+            .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+            .map(({ call_sid, session_id, conversation_id, caller_phone, landing_number, session_state, started_at, ended_at, transcript_segments, recording_available, updated_at }) => ({
+            call_sid, session_id, conversation_id, caller_phone, landing_number, session_state, started_at, ended_at, booking_id: (tenant.exotel_calls || []).find((item) => item.call_sid === call_sid)?.booking_id,
+            transcript_segments, recording_available, updated_at,
+        }));
+    }
+    async syncExotelCalls(tenantId, startDate, endDate, after) {
+        const tenant = this.tenants[tenantId];
+        if (!tenant)
+            return null;
+        const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+        if (!validDate(startDate) || !validDate(endDate) || startDate > endDate || startDate < new Date(Date.now() - 183 * 86400000).toISOString().slice(0, 10) || endDate > new Date().toISOString().slice(0, 10)) {
+            return { error: 'Use valid dates within the last six months, with start_date on or before end_date.' };
+        }
+        if ((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 > 30) {
+            return { error: 'Exotel call sync supports date ranges of at most 31 days.' };
+        }
+        const config = tenant.telephony;
+        const apiKey = this.decryptCredential(config?.exotel_api_key_encrypted) || process.env.EXOTEL_API_KEY || '';
+        const apiToken = this.decryptCredential(config?.exotel_api_token_encrypted) || process.env.EXOTEL_API_TOKEN || '';
+        if (!config?.account_sid || !config.phone_number || !apiKey || !apiToken)
+            return { error: 'Save the Exotel Account SID and ExoPhone, and configure the Exotel API credentials first.' };
+        const host = config.region === 'singapore' ? 'https://api.exotel.com' : 'https://api.in.exotel.com';
+        const query = new URLSearchParams({
+            DateCreated: `gte:${startDate} 00:00:00;lte:${endDate} 23:59:59`,
+            PhoneNumber: config.phone_number,
+            Direction: 'inbound',
+            PageSize: '100',
+            SortBy: 'DateCreated:desc',
+        });
+        if (after) {
+            if (after.length > 512 || !/^[A-Za-z0-9+/=_-]+$/.test(after))
+                return { error: 'Exotel pagination cursor is invalid.' };
+            query.set('After', after);
+        }
+        try {
+            const providerCalls = [];
+            let nextAfter = '';
+            const authorization = `Basic ${Buffer.from(`${apiKey}:${apiToken}`).toString('base64')}`;
+            for (let page = 0; page < 10; page += 1) {
+                const response = await fetch(`${host}/v1/Accounts/${encodeURIComponent(config.account_sid)}/Calls.json?${query}`, {
+                    headers: { Authorization: authorization, Accept: 'application/json' },
+                });
+                if (!response.ok)
+                    return { error: `Exotel call history lookup failed with HTTP ${response.status}.` };
+                const payload = await response.json();
+                providerCalls.push(...(Array.isArray(payload?.Calls) ? payload.Calls : []));
+                const nextUri = String(payload?.Metadata?.NextPageUri || '');
+                const cursor = nextUri ? new URL(nextUri, host).searchParams.get('After') || '' : '';
+                if (!cursor) {
+                    nextAfter = '';
+                    break;
+                }
+                nextAfter = cursor;
+                query.set('After', cursor);
+            }
+            const calls = tenant.exotel_calls ||= [];
+            let imported = 0;
+            for (const providerCall of providerCalls) {
+                const callSid = String(providerCall?.Sid || '').trim();
+                if (!/^[A-Za-z0-9_-]{6,128}$/.test(callSid))
+                    continue;
+                let call = calls.find((item) => item.call_sid === callSid);
+                if (!call) {
+                    call = { call_sid: callSid, transcript_segments: [], updated_at: new Date().toISOString() };
+                    calls.push(call);
+                    imported += 1;
+                }
+                call.caller_phone ||= String(providerCall?.From || '').slice(0, 64);
+                call.landing_number ||= String(providerCall?.PhoneNumber || providerCall?.To || '').slice(0, 64);
+                call.session_state ||= String(providerCall?.Status || '').slice(0, 40);
+                call.started_at ||= String(providerCall?.StartTime || providerCall?.DateCreated || '').slice(0, 64);
+                call.ended_at ||= String(providerCall?.EndTime || '').slice(0, 64);
+                call.recording_available = Boolean(providerCall?.PreSignedRecordingUrl || providerCall?.RecordingUrl || call.recording_available);
+                call.updated_at = new Date().toISOString();
+            }
+            if (calls.length > 100)
+                calls.splice(0, calls.length - 100);
+            this.persistState();
+            await this.waitForPendingPersistence();
+            return { imported, matched: providerCalls.length, has_more: Boolean(nextAfter), ...(nextAfter ? { next_after: nextAfter } : {}), calls: this.listExotelCalls(tenantId) };
+        }
+        catch {
+            return { error: 'Could not retrieve Exotel call history. Check Exotel API access and the selected region.' };
+        }
+    }
+    async bookExotelCall(tenantId, callSid, payload) {
+        const tenant = this.tenants[tenantId];
+        const call = tenant?.exotel_calls?.find((item) => item.call_sid === callSid);
+        if (!tenant || !call)
+            return { error: 'Call not found.' };
+        const digits = (value) => value.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+        if (call.caller_phone && digits(String(payload?.phone_number || '')) !== digits(call.caller_phone)) {
+            return { error: 'The booking phone number must match the caller ID recorded by Exotel.' };
+        }
+        const requestId = `exotel-${callSid}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
+        const result = await this.voiceTool(tenantId, { ...payload, action: 'book', request_id: requestId });
+        if ('error' in result)
+            return result;
+        const appointment = result.appointment;
+        call.booking_id = appointment.id;
+        call.updated_at = new Date().toISOString();
+        this.persistState();
+        await this.waitForPendingPersistence();
+        return { ...result, call_sid: callSid };
+    }
+    async getExotelCallRecording(tenantId, callSid) {
+        const tenant = this.tenants[tenantId];
+        const call = tenant?.exotel_calls?.find((item) => item.call_sid === callSid);
+        if (!tenant || !call)
+            return { error: 'Call not found.' };
+        const config = tenant.telephony;
+        const apiKey = this.decryptCredential(config?.exotel_api_key_encrypted) || process.env.EXOTEL_API_KEY || '';
+        const apiToken = this.decryptCredential(config?.exotel_api_token_encrypted) || process.env.EXOTEL_API_TOKEN || '';
+        if (!config?.account_sid || !apiKey || !apiToken)
+            return { error: 'Exotel Call Details credentials are not configured for this clinic.' };
+        const host = config.region === 'singapore' ? 'https://api.exotel.com' : 'https://api.in.exotel.com';
+        const url = `${host}/v1/Accounts/${encodeURIComponent(config.account_sid)}/Calls/${encodeURIComponent(callSid)}?RecordingUrlValidity=10`;
+        try {
+            const response = await fetch(url, {
+                headers: { Authorization: `Basic ${Buffer.from(`${apiKey}:${apiToken}`).toString('base64')}`, Accept: 'application/json, application/xml' },
+            });
+            if (!response.ok)
+                return { error: `Exotel call lookup failed with HTTP ${response.status}.` };
+            const raw = await response.text();
+            let recordingUrl = '';
+            let signedRecordingUrl = false;
+            try {
+                const parsed = JSON.parse(raw);
+                const callData = parsed?.Call || parsed?.call || parsed?.RestResponse?.Call || parsed;
+                const signed = callData?.PreSignedRecordingUrl || callData?.presigned_recording_url;
+                recordingUrl = String(signed || callData?.RecordingUrl || callData?.recording_url || '');
+                signedRecordingUrl = Boolean(signed);
+            }
+            catch {
+                const match = /<(PreSignedRecordingUrl|RecordingUrl)>([\s\S]*?)<\/\1>/i.exec(raw);
+                recordingUrl = match?.[2]?.trim().replace(/&amp;/g, '&') || '';
+                signedRecordingUrl = match?.[1].toLowerCase() === 'presignedrecordingurl';
+            }
+            if (recordingUrl && !/^https:\/\//i.test(recordingUrl))
+                return { error: 'Exotel returned an invalid recording URL.' };
+            call.recording_available = Boolean(recordingUrl);
+            call.updated_at = new Date().toISOString();
+            this.persistState();
+            await this.waitForPendingPersistence();
+            return recordingUrl ? { call_sid: callSid, recording_url: recordingUrl, ...(signedRecordingUrl ? { expires_in_minutes: 10 } : {}) } : { call_sid: callSid, recording_url: null, message: 'No recording is available for this call.' };
+        }
+        catch {
+            return { error: 'Could not retrieve the recording details from Exotel.' };
+        }
+    }
+    getClinicDoctorCandidates(tenantId) {
+        const configured = this.getVoiceAgent(tenantId).clinic_context?.doctors || [];
+        const previouslyBooked = this.tenants[tenantId]?.bookings?.map((booking) => booking.doctor_name) || [];
+        const names = [...configured, ...previouslyBooked]
+            .map((name) => String(name || '').trim())
+            .filter(Boolean);
+        const unique = new Map();
+        for (const name of names)
+            if (!unique.has(name.toLocaleLowerCase()))
+                unique.set(name.toLocaleLowerCase(), name);
+        return [...unique.values()];
+    }
+    clinicDateParts(tenantId, date = new Date()) {
+        const timezone = this.getVoiceAgent(tenantId).timezone || 'Asia/Kolkata';
+        const parts = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+        const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+        return { year: Number(values.year), month: Number(values.month), day: Number(values.day) };
+    }
+    dateKey(year, month, day) {
+        const date = new Date(Date.UTC(year, month - 1, day));
+        if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day)
+            return null;
+        return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+    normalizeVoiceDate(tenantId, input) {
+        const raw = String(input || '').trim().toLocaleLowerCase();
+        if (!raw)
+            return null;
+        const today = this.clinicDateParts(tenantId);
+        const relative = raw.normalize('NFC');
+        let offset = null;
+        if (/\b(day after tomorrow|parso)\b|परसों|परसो/u.test(relative))
+            offset = 2;
+        else if (/\b(today|aaj|aj)\b|आज/u.test(relative))
+            offset = 0;
+        else if (/\b(tomorrow|kal)\b|कल/u.test(relative))
+            offset = 1;
+        if (offset !== null) {
+            const date = new Date(Date.UTC(today.year, today.month - 1, today.day + offset));
+            return this.dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+        }
+        let match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw);
+        if (match)
+            return this.dateKey(Number(match[1]), Number(match[2]), Number(match[3]));
+        match = /^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/.exec(raw);
+        if (match) {
+            const year = match[3] ? Number(match[3].length === 2 ? `20${match[3]}` : match[3]) : today.year;
+            return this.dateKey(year, Number(match[2]), Number(match[1]));
+        }
+        const months = 'january february march april may june july august september october november december'.split(' ');
+        const monthPattern = months.map((month) => `${month.slice(0, 3)}(?:${month.slice(3)})?`).join('|');
+        match = new RegExp(`^(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?$`, 'i').exec(raw)
+            || new RegExp(`^(${monthPattern})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?$`, 'i').exec(raw);
+        if (match) {
+            const dayFirst = /^\d/.test(match[1]);
+            const day = Number(dayFirst ? match[1] : match[2]);
+            const monthName = (dayFirst ? match[2] : match[1]).slice(0, 3).toLowerCase();
+            const year = Number(match[3] || today.year);
+            return this.dateKey(year, months.findIndex((month) => month.startsWith(monthName)) + 1, day);
+        }
+        return null;
+    }
+    normalizeVoiceTime(input) {
+        const raw = String(input || '').trim().toLocaleLowerCase();
+        if (!raw)
+            return null;
+        const match = /(?:^|\b)(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|am|pm)?\s*(?:o'?clock|baje|baj[eé]|bje|बजे)?\b/u.exec(raw);
+        if (!match)
+            return null;
+        let hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        const meridiem = match[3]?.replace(/\./g, '')
+            || (/\b(subah|morning)\b|सुबह/u.test(raw) ? 'am' : undefined)
+            || (/\b(shaam|sham|evening|night|raat)\b|दोपहर|शाम|रात/u.test(raw) ? 'pm' : undefined);
+        if (minute > 59)
+            return null;
+        if (meridiem) {
+            if (hour < 1 || hour > 12)
+                return null;
+            if (meridiem === 'am' && hour === 12)
+                hour = 0;
+            if (meridiem === 'pm' && hour < 12)
+                hour += 12;
+        }
+        else if (hour > 23)
+            return null;
+        return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
     }
     isFutureClinicDate(tenantId, date, time) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -913,7 +1457,7 @@ class AppService {
     getPatients(tenantId) {
         return this.tenants[tenantId]?.patients || [];
     }
-    addBooking(tenantId, booking) {
+    async addBooking(tenantId, booking) {
         const tenant = this.tenants[tenantId];
         if (!tenant)
             return null;
@@ -921,16 +1465,41 @@ class AppService {
         if (policyError)
             return { error: policyError };
         const existing = tenant.bookings.find((item) => item.id === booking.id);
-        if (existing)
+        if (existing) {
+            await this.waitForPendingPersistence();
             return existing;
+        }
         const duration = Number(booking.duration_minutes) || this.appointmentDuration(tenantId);
         const conflict = this.findScheduleConflict(tenantId, booking.appointment_date, booking.appointment_time, booking.doctor_name, duration);
         if (conflict)
             return { error: this.scheduleConflictMessage(tenantId, conflict) };
         const savedBooking = { ...booking, duration_minutes: duration, created_at: booking.created_at || new Date().toISOString() };
         tenant.bookings.push(savedBooking);
-        this.persistState();
+        try {
+            this.persistState();
+            await this.waitForPendingPersistence();
+        }
+        catch (error) {
+            const index = tenant.bookings.findIndex((item) => item.id === savedBooking.id);
+            if (index !== -1)
+                tenant.bookings.splice(index, 1);
+            throw error;
+        }
         return savedBooking;
+    }
+    async waitForPendingPersistence() {
+        const started = node_perf_hooks_1.performance.now();
+        let outcome = 'success';
+        try {
+            await this.pendingPostgresWrite;
+        }
+        catch (error) {
+            outcome = 'failure';
+            throw error;
+        }
+        finally {
+            console.info(JSON.stringify({ event: 'postgres.persist_wait_timing', duration_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), outcome }));
+        }
     }
     updateBookingStatus(tenantId, bookingId, status) {
         const tenant = this.tenants[tenantId];
