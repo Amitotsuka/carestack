@@ -10,7 +10,7 @@ const API_URL = import.meta.env.VITE_API_URL || (
 );
 const emptyPatient = { name: '', phone: '', email: '', age: '', notes: '', status: 'active' };
 const emptyBooking = { patient_name: '', phone_number: '', doctor_name: '', appointment_date: '', appointment_time: '', reason: 'General consultation' };
-const emptyTenant = { tenant_name: '', tenant_domain: '', logo_data_url: '', admin_name: '', admin_email: '', admin_phone: '', plan: 'growth', billing_cycle: 'monthly', subscription_status: 'active', region: 'India' };
+const emptyTenant = { tenant_name: '', tenant_domain: '', admin_name: '', admin_email: '', admin_phone: '', plan: 'growth', billing_cycle: 'monthly', subscription_status: 'active', region: 'India' };
 const emptyPlan = { id: '', name: '', monthly_price: '', annual_price: '', clinic_limit: '', user_limit: '' };
 const defaultVoiceAgent = { enabled: true, availability: 'business_hours', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', appointment_duration_minutes: 30, clinic_context: { address: '', services: [], doctors: [], fees: '', languages: ['Hindi', 'Hinglish', 'English'], instructions: '', faqs: [] } };
 const emptyTelephony = { phone_number: '', account_sid: '', app_id: '', region: 'mumbai', enabled: false, exotel_api_key: '', exotel_api_token: '', sarvam_org_id: '', sarvam_workspace_id: '', sarvam_agent_id: '', sarvam_agent_version: '', sarvam_connection_id: '' };
@@ -137,7 +137,6 @@ const getTenantBrand = () => {
       hostname: 'localhost',
       accent: '#2a6df3',
       tagline: 'Multi-clinic operations platform',
-      logoDataUrl: '',
     };
   }
 
@@ -184,7 +183,7 @@ const getTenantBrand = () => {
     tagline: 'Connected care operations',
   };
 
-  return { ...mapped, logoDataUrl: '' };
+  return mapped;
 };
 
 function App() {
@@ -249,7 +248,6 @@ function App() {
   const [bookingFormOpen, setBookingFormOpen] = useState(false);
   const [appointmentRegisterOpen, setAppointmentRegisterOpen] = useState(true);
   const [tenantForm, setTenantForm] = useState(emptyTenant);
-  const [tenantLogoError, setTenantLogoError] = useState('');
   const [appointmentQuery, setAppointmentQuery] = useState('');
   const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
   const [appointmentDateFilter, setAppointmentDateFilter] = useState('all');
@@ -402,7 +400,7 @@ function App() {
   useEffect(() => {
     request(`/api/tenant/resolve/${encodeURIComponent(tenantBrand.domain)}`).then((tenant) => {
       if (tenant) {
-        setTenantBrand((current) => ({ ...current, name: tenant.name, shortName: tenant.name.split(' ')[0], logoDataUrl: tenant.logo_data_url || '' }));
+        setTenantBrand((current) => ({ ...current, name: tenant.name, shortName: tenant.name.split(' ')[0] }));
       }
     }).catch(() => {});
   }, [tenantBrand.domain]);
@@ -868,7 +866,7 @@ function App() {
     try {
       const data = await request(editingTenantId ? `/api/tenants/${editingTenantId}` : '/api/tenants/onboard', {
         method: editingTenantId ? 'PUT' : 'POST',
-        body: JSON.stringify({ ...tenantForm, logo_data_url: tenantForm.logo_data_url || null }),
+        body: JSON.stringify(tenantForm),
       });
       if (isChangingTenantPassword) {
         await request(`/api/tenants/${editingTenantId}/password`, {
@@ -880,7 +878,6 @@ function App() {
         ? `${data.tenant.name} was updated${isChangingTenantPassword ? ' and its administrator password was changed' : ''}.`
         : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. A one-time password was emailed to ${data.tenant.admin_email}; it expires in 24 hours and must be changed at first sign-in.`);
       setTenantForm(emptyTenant);
-      setTenantLogoError('');
       setEditingTenantPassword('');
       setEditingTenantPasswordConfirm('');
       setEditingTenantId(null);
@@ -892,7 +889,7 @@ function App() {
     }
   };
 
-  const editTenant = async (tenant) => {
+  const editTenant = (tenant) => {
     setEditingTenantId(tenant.id);
     setTenantManagementFormOpen(true);
     setPasswordTenantId(null);
@@ -900,11 +897,9 @@ function App() {
     setTenantPasswordConfirm('');
     setEditingTenantPassword('');
     setEditingTenantPasswordConfirm('');
-    setTenantLogoError('');
     setTenantForm({
       tenant_name: tenant.name,
       tenant_domain: tenant.domain,
-      logo_data_url: '',
       admin_name: tenant.admin_name,
       admin_email: tenant.admin_email,
       admin_phone: tenant.admin_phone || '',
@@ -916,15 +911,6 @@ function App() {
     setNotice('');
     setError('');
     document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth' });
-    setBusy(true);
-    try {
-      const result = await request(`/api/tenants/${tenant.id}`);
-      setTenantForm((current) => ({ ...current, logo_data_url: result.tenant.logo_data_url || '' }));
-    } catch (loadError) {
-      setError(loadError.message || 'Clinic details could not be loaded.');
-    } finally {
-      setBusy(false);
-    }
   };
 
   const openTenantPasswordForm = (tenant) => {
@@ -1281,27 +1267,6 @@ function App() {
     };
     reader.onerror = () => { setProfileError('The selected image could not be opened.'); setProfileNotice(''); };
     reader.readAsDataURL(file);
-  };
-
-  const handleTenantLogoChange = (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      setTenantLogoError('Choose a PNG, JPG, or WebP image.');
-      event.target.value = '';
-      return;
-    }
-    if (file.size > 500 * 1024) {
-      setTenantLogoError('Choose an image smaller than 500 KB.');
-      event.target.value = '';
-      return;
-    }
-    setTenantLogoError('');
-    const reader = new FileReader();
-    reader.onload = () => setTenantForm((current) => ({ ...current, logo_data_url: String(reader.result || '') }));
-    reader.onerror = () => setTenantLogoError('The selected image could not be read.');
-    reader.readAsDataURL(file);
-    event.target.value = '';
   };
 
   const saveOwnProfile = async (event) => {
@@ -1707,7 +1672,7 @@ function App() {
       {loginOpen && <div className="login-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLoginOpen(false); }}>
         <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-heading">
           <button className="login-close" aria-label="Close sign in" onClick={() => setLoginOpen(false)}>×</button>
-          <div className="login-brand"><span className="login-brand-mark">{loginRole === 'tenant' ? (tenantBrand.logoDataUrl ? <img src={tenantBrand.logoDataUrl} alt={`${tenantBrand.name} logo`} /> : String(tenantBrand.shortName || tenantBrand.name || 'C').charAt(0).toUpperCase()) : <img src={carestackMark} alt="CareStack platform logo" />}</span></div>
+          <div className="login-brand"><img src={carestackMark} alt="CareStack" /></div>
           <h2 id="login-heading">{loginMode === 'login' ? 'Welcome back.' : loginMode === 'forgot' ? 'Reset your password.' : loginMode === 'reset' ? 'Choose a new password.' : 'Secure your account.'}</h2>
           <p className="login-subtitle">{loginMode === 'login' ? 'Choose your workspace to continue.' : loginMode === 'forgot' ? 'We’ll email a short reset code if this account exists.' : loginMode === 'reset' ? 'Enter the code sent to your account email.' : 'Your one-time password has been used. Set a new password to continue.'}</p>
           {loginMode === 'login' && <>
@@ -1756,7 +1721,7 @@ function App() {
             <div className="card shadow-lg border-0 rounded-4">
               <div className="card-body p-4 p-lg-5">
                 <div className="text-center mb-4">
-                  <div className={`auth-logo ${tenantBrand.logoDataUrl ? 'auth-logo-image' : ''}`} style={{ background: `${tenantBrand.accent}1a`, color: tenantBrand.accent }}>{tenantBrand.logoDataUrl ? <img src={tenantBrand.logoDataUrl} alt={`${tenantBrand.name} logo`} /> : tenantBrand.shortName.charAt(0)}</div>
+                  <img className="auth-logo" src={carestackMark} alt="CareStack" />
                   <h2 className="fw-bold mt-3">{tenantBrand.name}</h2>
                   <p className="text-muted mb-0">Tenant admin / super admin access · {tenantBrand.hostname}</p>
                 </div>
@@ -2013,7 +1978,6 @@ function App() {
                     <div className="row g-3">
                       <div className="col-md-6"><label className="form-label" htmlFor="tenant-name">Clinic name</label><input id="tenant-name" className="form-control" required minLength="2" value={tenantForm.tenant_name} onChange={(event) => setTenantForm({ ...tenantForm, tenant_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="tenant-domain">Tenant slug</label><div className="input-group"><input id="tenant-domain" className="form-control" pattern="[a-z0-9]+(-[a-z0-9]+)*" required minLength="2" value={tenantForm.tenant_domain} onChange={(event) => setTenantForm({ ...tenantForm, tenant_domain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /><span className="input-group-text">slug</span></div><small className="text-muted">Used to identify this clinic in the shared sign-in portal.</small></div>
-                      <div className="col-12"><div className="clinic-logo-editor"><div className="clinic-logo-preview">{tenantForm.logo_data_url ? <img src={tenantForm.logo_data_url} alt="Clinic logo preview" /> : <span>{String(tenantForm.tenant_name || 'C').charAt(0).toUpperCase()}</span>}</div><div className="clinic-logo-controls"><label className="form-label mb-1">Clinic logo</label><small className="d-block text-muted mb-2">Shown at the top of this clinic’s login screen. PNG, JPG, or WebP · up to 500 KB.</small><div className="d-flex align-items-center gap-3"><label className="btn btn-outline-primary btn-sm mb-0">{tenantForm.logo_data_url ? 'Replace logo' : 'Upload logo'}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleTenantLogoChange} hidden /></label>{tenantForm.logo_data_url && <button type="button" className="btn btn-link btn-sm text-danger p-0" onClick={() => { setTenantForm((current) => ({ ...current, logo_data_url: '' })); setTenantLogoError(''); }}>Remove logo</button>}</div>{tenantLogoError && <small className="d-block text-danger mt-2" role="alert">{tenantLogoError}</small>}</div></div></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-name">Admin name</label><input id="admin-name" className="form-control" required value={tenantForm.admin_name} onChange={(event) => setTenantForm({ ...tenantForm, admin_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>

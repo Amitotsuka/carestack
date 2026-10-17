@@ -161,13 +161,6 @@ __decorate([
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
-    (0, class_validator_1.MaxLength)(700000),
-    (0, class_validator_1.Matches)(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
-    __metadata("design:type", String)
-], TenantOnboardDto.prototype, "logo_data_url", void 0);
-__decorate([
-    (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsString)(),
     (0, class_validator_1.MinLength)(10),
     (0, class_validator_1.IsByteLength)(10, 72),
     __metadata("design:type", String)
@@ -191,13 +184,6 @@ __decorate([
     (0, class_validator_1.Matches)(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     __metadata("design:type", String)
 ], TenantUpdateDto.prototype, "tenant_domain", void 0);
-__decorate([
-    (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsString)(),
-    (0, class_validator_1.MaxLength)(700000),
-    (0, class_validator_1.Matches)(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
-    __metadata("design:type", String)
-], TenantUpdateDto.prototype, "logo_data_url", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),

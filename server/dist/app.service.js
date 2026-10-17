@@ -446,7 +446,6 @@ class AppService {
             billing_cycle: tenant.billing_cycle,
             monthly_price: this.monthlyRevenueFor(tenant),
             region: tenant.region,
-            logo_configured: Boolean(tenant.logo_data_url),
             patient_count: tenant.patients.length,
             booking_count: tenant.bookings.length,
             telephony: this.publicTelephony(tenant.telephony),
@@ -461,7 +460,6 @@ class AppService {
             id: tenant.id,
             name: tenant.name,
             domain: tenant.domain,
-            logo_data_url: tenant.logo_data_url || null,
             subscription_status: tenant.subscription_status,
         };
     }
@@ -473,7 +471,6 @@ class AppService {
             id: tenant.id,
             name: tenant.name,
             domain: tenant.domain,
-            logo_data_url: tenant.logo_data_url || null,
             admin_name: tenant.admin_name,
             admin_email: tenant.admin_email,
             admin_phone: tenant.admin_phone,
@@ -590,7 +587,6 @@ class AppService {
             id: tenantId,
             name: payload.tenant_name,
             domain: tenantDomain,
-            logo_data_url: payload.logo_data_url || null,
             admin_name: payload.admin_name,
             admin_email: adminEmail,
             admin_phone: payload.admin_phone,
@@ -654,8 +650,6 @@ class AppService {
             tenant.name = String(payload.tenant_name).trim();
         if (payload.tenant_domain !== undefined)
             tenant.domain = nextDomain;
-        if (payload.logo_data_url !== undefined)
-            tenant.logo_data_url = payload.logo_data_url || null;
         if (payload.admin_name !== undefined)
             tenant.admin_name = String(payload.admin_name).trim();
         if (payload.admin_email !== undefined)

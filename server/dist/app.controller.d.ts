@@ -37,14 +37,12 @@ declare class TenantOnboardDto {
     admin_phone: string;
     plan: string;
     region: string;
-    logo_data_url?: string | null;
     admin_password?: string;
     billing_cycle?: string;
 }
 declare class TenantUpdateDto {
     tenant_name?: string;
     tenant_domain?: string;
-    logo_data_url?: string | null;
     admin_name?: string;
     admin_email?: string;
     admin_phone?: string;
@@ -216,7 +214,6 @@ export declare class AppController {
         id: string;
         name: string;
         domain: string;
-        logo_data_url: string;
         subscription_status: "active" | "paused";
     };
     getPublicPlans(): {
@@ -257,7 +254,6 @@ export declare class AppController {
             billing_cycle: "monthly" | "annual";
             monthly_price: number;
             region: string;
-            logo_configured: boolean;
             patient_count: number;
             booking_count: number;
             telephony: {
@@ -312,7 +308,6 @@ export declare class AppController {
             id: string;
             name: string;
             domain: string;
-            logo_data_url: string;
             admin_name: string;
             admin_email: string;
             admin_phone: string;
@@ -397,7 +392,6 @@ export declare class AppController {
             billing_cycle: "monthly" | "annual";
             monthly_price: number;
             region: string;
-            logo_configured: boolean;
             patient_count: number;
             booking_count: number;
             telephony: {
@@ -1508,7 +1502,6 @@ export declare class AppController {
             billing_cycle: "monthly" | "annual";
             monthly_price: number;
             region: string;
-            logo_configured: boolean;
             patient_count: number;
             booking_count: number;
             telephony: {
