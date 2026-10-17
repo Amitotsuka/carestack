@@ -22,11 +22,11 @@
       "type": "string",
       "minLength": 2,
       "maxLength": 120,
-      "description": "Caller-provided patient name."
+      "description": "Required. The name the appointment is booked under; it may differ from the caller's name. Use the exact name the caller stated and confirmed. Never invent, complete, translate, normalize, or substitute a sample, placeholder, or another caller's name. If unclear, ask the caller to repeat or spell it."
     },
     "phone_number": {
       "type": "string",
-      "description": "Caller-confirmed reachable phone number."
+      "description": "Required. Use only a caller-spoken and caller-confirmed reachable number, or verified incoming Exotel caller ID exposed in call context after caller confirmation. Never guess digits or use the clinic phone number. If caller ID is unavailable, ask the caller for a number and repeat it back for confirmation."
     },
     "doctor_name": {
       "type": "string",
