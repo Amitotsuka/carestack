@@ -91,9 +91,9 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'overlap-request-001', time: '11:15' }), /overlaps an existing booking/);
 
   await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-002', confirmed: false }), /confirmation/);
-  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'book', confirmed: true }), /request_id, patient_name, phone_number, doctor_name, date, time, reason/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'book', confirmed: true }), /request_id, patient_name, phone_number, date, time, reason/);
   await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { action: 'cancel' }), /human receptionist/);
-  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-003', date: '2030-02-31' }), /future date/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', clinicSecret, { ...request, request_id: 'call-request-003', date: '2030-02-31' }), /date such as today or tomorrow/);
   await assert.rejects(controller.voiceTool('tenant-unknown', service.getVoiceToolSecret('tenant-unknown'), { action: 'clinic_info' }), /Clinic not found/);
   const normalizedAction = await controller.voiceTool('tenant-skycare', clinicSecret, { ...request, action: ' BOOK ', request_id: 'call-request-normalized', time: '12:00' });
   assert.equal(normalizedAction.appointment.id, 'VOICE-call-request-normalized');
