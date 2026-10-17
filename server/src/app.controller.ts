@@ -311,6 +311,57 @@ export class AppController {
     return result;
   }
 
+  @Post('api/exotel/voicebot/webhooks/:tenantId')
+  async exotelVoicebotWebhook(@Param('tenantId') tenantId: string, @Headers('authorization') authorization: string, @Body() body: any) {
+    const result = await this.appService.ingestExotelVoicebotWebhook(tenantId, authorization, body);
+    if ('error' in result && result.error === 'Webhook authentication failed.') throw new UnauthorizedException(result.error);
+    if ('error' in result) throw new BadRequestException(result.error);
+    return { http_code: 200, response: { data: result } };
+  }
+
+  @Get('api/tenants/:tenantId/exotel/calls')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  listExotelCalls(@Param('tenantId') tenantId: string) {
+    const calls = this.appService.listExotelCalls(tenantId);
+    if (!calls) throw new NotFoundException('Clinic not found');
+    return { calls };
+  }
+
+  @Post('api/tenants/:tenantId/exotel/calls/sync')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  async syncExotelCalls(@Param('tenantId') tenantId: string, @Body() body: any) {
+    const result = await this.appService.syncExotelCalls(tenantId, String(body?.start_date || ''), String(body?.end_date || ''), body?.after ? String(body.after) : undefined);
+    if (result === null) throw new NotFoundException('Clinic not found');
+    if ('error' in result) throw new BadGatewayException(result.error);
+    return result;
+  }
+
+  @Get('api/tenants/:tenantId/exotel/calls/:callSid/recording')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  async getExotelCallRecording(@Param('tenantId') tenantId: string, @Param('callSid') callSid: string) {
+    const result = await this.appService.getExotelCallRecording(tenantId, callSid);
+    if ('error' in result && result.error === 'Call not found.') throw new NotFoundException(result.error);
+    if ('error' in result) throw new BadGatewayException(result.error);
+    return result;
+  }
+
+  @Post('api/tenants/:tenantId/exotel/calls/:callSid/book')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  async bookExotelCall(@Param('tenantId') tenantId: string, @Param('callSid') callSid: string, @Body() body: any) {
+    const result = await this.appService.bookExotelCall(tenantId, callSid, body);
+    if ('error' in result && result.error === 'Call not found.') throw new NotFoundException(result.error);
+    if ('error' in result) throw new BadRequestException(result.error);
+    return result;
+  }
+
   @Post('api/voice/tools/:tenantId')
   async voiceTool(
     @Param('tenantId') tenantId: string,

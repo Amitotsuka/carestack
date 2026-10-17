@@ -40,6 +40,21 @@ type Booking = {
   created_at?: string;
 };
 
+type ExotelCall = {
+  call_sid: string;
+  session_id?: string;
+  conversation_id?: string;
+  caller_phone?: string;
+  landing_number?: string;
+  session_state?: string;
+  started_at?: string;
+  ended_at?: string;
+  transcript_segments: Array<{ speaker: string; text: string; start_timestamp?: string; end_timestamp?: string }>;
+  recording_available?: boolean;
+  booking_id?: string;
+  updated_at: string;
+};
+
 type Plan = {
   id: string;
   name: string;
@@ -64,6 +79,7 @@ type Tenant = {
   users: TenantUser[];
   patients: Patient[];
   bookings: Booking[];
+  exotel_calls?: ExotelCall[];
   voice_agent: { enabled: boolean; availability: 'all_day' | 'business_hours'; open_time: string; close_time: string; timezone: string; appointment_duration_minutes?: number; clinic_context?: any };
   telephony?: {
     provider: 'exotel'; voice_provider?: 'sarvam' | 'exotel_voicebot'; exotel_voicebot_id?: string;
@@ -925,6 +941,214 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
     if (action === 'cancel' || action === 'reschedule') return { error: 'This appointment change is not enabled: patient verification and an authoritative scheduling integration are not configured. Offer a human receptionist.' };
     return { error: 'Unsupported action. Supported actions are clinic_info, faq, availability, and book.' };
+  }
+
+  async ingestExotelVoicebotWebhook(tenantId: string, authorizationHeader: string, payload: any) {
+    const tenant = this.tenants[tenantId];
+    const configuredUser = process.env.EXOTEL_VOICEBOT_WEBHOOK_USERNAME || '';
+    const configuredPassword = process.env.EXOTEL_VOICEBOT_WEBHOOK_PASSWORD || '';
+    const basicMatch = /^Basic\s+([A-Za-z0-9+/]+=*)$/i.exec(String(authorizationHeader || '').trim());
+    let authenticated = this.validateVoiceToolSecret(tenantId, String(payload?.custom_parameters?.carestack_webhook_token || '').trim());
+    if (configuredUser.length >= 16 && configuredPassword.length >= 32 && basicMatch) {
+      try {
+        const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf8');
+        const separator = decoded.indexOf(':');
+        const user = Buffer.from(separator >= 0 ? decoded.slice(0, separator) : '');
+        const password = Buffer.from(separator >= 0 ? decoded.slice(separator + 1) : '');
+        const expectedUser = Buffer.from(configuredUser);
+        const expectedPassword = Buffer.from(configuredPassword);
+        authenticated ||= user.length === expectedUser.length && password.length === expectedPassword.length && timingSafeEqual(user, expectedUser) && timingSafeEqual(password, expectedPassword);
+      } catch { authenticated = false; }
+    }
+    if (!tenant || !authenticated) return { error: 'Webhook authentication failed.' };
+    const callSid = String(payload?.metadata?.call_sid || payload?.external_id || '').trim();
+    const sessionId = String(payload?.session_id || '').trim();
+    if (!/^[A-Za-z0-9_-]{6,128}$/.test(callSid) || !sessionId || sessionId.length > 128) return { error: 'A valid Exotel call SID and session_id are required.' };
+    const configuredAccount = String(tenant.telephony?.account_sid || '');
+    const configuredBot = String(tenant.telephony?.exotel_voicebot_id || '');
+    const eventAccount = String(payload?.account_id || '');
+    if (!configuredAccount || !configuredBot || String(payload?.bot_id || '') !== configuredBot || (eventAccount && eventAccount !== configuredAccount)) {
+      return { error: 'Exotel account or Voicebot does not match this clinic.' };
+    }
+
+    const calls = tenant.exotel_calls ||= [];
+    let call = calls.find((item) => item.call_sid === callSid);
+    if (!call) {
+      call = { call_sid: callSid, transcript_segments: [], updated_at: new Date().toISOString() };
+      calls.push(call);
+      if (calls.length > 100) calls.splice(0, calls.length - 100);
+    }
+    call.session_id = sessionId;
+    if (payload?.conversation_id) call.conversation_id = String(payload.conversation_id).slice(0, 128);
+    if (payload?.contact_uri) call.caller_phone = String(payload.contact_uri).replace(/^sip:/i, '').split('@')[0].slice(0, 64);
+    if (payload?.landing_number) call.landing_number = String(payload.landing_number).slice(0, 64);
+    if (payload?.session_state) call.session_state = String(payload.session_state).slice(0, 40);
+    if (payload?.start_time) call.started_at = String(payload.start_time).slice(0, 64);
+    if (payload?.end_time) call.ended_at = String(payload.end_time).slice(0, 64);
+
+    const incomingSegments = (Array.isArray(payload?.events) ? payload.events : [])
+      .filter((event: any) => event?.event_type === 'transcript')
+      .flatMap((event: any) => Array.isArray(event?.event_data?.transcripts) ? event.event_data.transcripts : [])
+      .flatMap((transcript: any) => Array.isArray(transcript?.transcript_segments) ? transcript.transcript_segments : [])
+      .filter((segment: any) => typeof segment?.text === 'string' && segment.text.trim())
+      .map((segment: any) => ({
+        speaker: String(segment.speaker || 'unknown').slice(0, 32),
+        text: String(segment.text).trim().slice(0, 2000),
+        ...(segment.start_timestamp ? { start_timestamp: String(segment.start_timestamp).slice(0, 64) } : {}),
+        ...(segment.end_timestamp ? { end_timestamp: String(segment.end_timestamp).slice(0, 64) } : {}),
+      }));
+    for (const segment of incomingSegments) {
+      const duplicate = call.transcript_segments.some((existing) => existing.speaker === segment.speaker && existing.text === segment.text && existing.start_timestamp === segment.start_timestamp);
+      if (!duplicate && call.transcript_segments.length < 100) call.transcript_segments.push(segment);
+    }
+    call.updated_at = new Date().toISOString();
+
+    // Recording links are intentionally not stored in the transcript webhook payload.
+    // They are fetched on demand from Exotel's authenticated Call Details API.
+    this.persistState();
+    await this.waitForPendingPersistence();
+    return { accepted: true, call_sid: callSid, transcript_segments_saved: incomingSegments.length };
+  }
+
+  listExotelCalls(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    return [...(tenant.exotel_calls || [])]
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .map(({ call_sid, session_id, conversation_id, caller_phone, landing_number, session_state, started_at, ended_at, transcript_segments, recording_available, updated_at }) => ({
+        call_sid, session_id, conversation_id, caller_phone, landing_number, session_state, started_at, ended_at, booking_id: (tenant.exotel_calls || []).find((item) => item.call_sid === call_sid)?.booking_id,
+        transcript_segments, recording_available, updated_at,
+      }));
+  }
+
+  async syncExotelCalls(tenantId: string, startDate: string, endDate: string, after?: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+    if (!validDate(startDate) || !validDate(endDate) || startDate > endDate || startDate < new Date(Date.now() - 183 * 86400000).toISOString().slice(0, 10) || endDate > new Date().toISOString().slice(0, 10)) {
+      return { error: 'Use valid dates within the last six months, with start_date on or before end_date.' };
+    }
+    if ((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 > 30) {
+      return { error: 'Exotel call sync supports date ranges of at most 31 days.' };
+    }
+    const config = tenant.telephony;
+    const apiKey = this.decryptCredential(config?.exotel_api_key_encrypted) || process.env.EXOTEL_API_KEY || '';
+    const apiToken = this.decryptCredential(config?.exotel_api_token_encrypted) || process.env.EXOTEL_API_TOKEN || '';
+    if (!config?.account_sid || !config.phone_number || !apiKey || !apiToken) return { error: 'Save the Exotel Account SID and ExoPhone, and configure the Exotel API credentials first.' };
+    const host = config.region === 'singapore' ? 'https://api.exotel.com' : 'https://api.in.exotel.com';
+    const query = new URLSearchParams({
+      DateCreated: `gte:${startDate} 00:00:00;lte:${endDate} 23:59:59`,
+      PhoneNumber: config.phone_number,
+      Direction: 'inbound',
+      PageSize: '100',
+      SortBy: 'DateCreated:desc',
+    });
+    if (after) {
+      if (after.length > 512 || !/^[A-Za-z0-9+/=_-]+$/.test(after)) return { error: 'Exotel pagination cursor is invalid.' };
+      query.set('After', after);
+    }
+    try {
+      const providerCalls: any[] = [];
+      let nextAfter = '';
+      const authorization = `Basic ${Buffer.from(`${apiKey}:${apiToken}`).toString('base64')}`;
+      for (let page = 0; page < 10; page += 1) {
+        const response = await fetch(`${host}/v1/Accounts/${encodeURIComponent(config.account_sid)}/Calls.json?${query}`, {
+          headers: { Authorization: authorization, Accept: 'application/json' },
+        });
+        if (!response.ok) return { error: `Exotel call history lookup failed with HTTP ${response.status}.` };
+        const payload = await response.json() as any;
+        providerCalls.push(...(Array.isArray(payload?.Calls) ? payload.Calls : []));
+        const nextUri = String(payload?.Metadata?.NextPageUri || '');
+        const cursor = nextUri ? new URL(nextUri, host).searchParams.get('After') || '' : '';
+        if (!cursor) { nextAfter = ''; break; }
+        nextAfter = cursor;
+        query.set('After', cursor);
+      }
+      const calls = tenant.exotel_calls ||= [];
+      let imported = 0;
+      for (const providerCall of providerCalls) {
+        const callSid = String(providerCall?.Sid || '').trim();
+        if (!/^[A-Za-z0-9_-]{6,128}$/.test(callSid)) continue;
+        let call = calls.find((item) => item.call_sid === callSid);
+        if (!call) {
+          call = { call_sid: callSid, transcript_segments: [], updated_at: new Date().toISOString() };
+          calls.push(call);
+          imported += 1;
+        }
+        call.caller_phone ||= String(providerCall?.From || '').slice(0, 64);
+        call.landing_number ||= String(providerCall?.PhoneNumber || providerCall?.To || '').slice(0, 64);
+        call.session_state ||= String(providerCall?.Status || '').slice(0, 40);
+        call.started_at ||= String(providerCall?.StartTime || providerCall?.DateCreated || '').slice(0, 64);
+        call.ended_at ||= String(providerCall?.EndTime || '').slice(0, 64);
+        call.recording_available = Boolean(providerCall?.PreSignedRecordingUrl || providerCall?.RecordingUrl || call.recording_available);
+        call.updated_at = new Date().toISOString();
+      }
+      if (calls.length > 100) calls.splice(0, calls.length - 100);
+      this.persistState();
+      await this.waitForPendingPersistence();
+      return { imported, matched: providerCalls.length, has_more: Boolean(nextAfter), ...(nextAfter ? { next_after: nextAfter } : {}), calls: this.listExotelCalls(tenantId) };
+    } catch {
+      return { error: 'Could not retrieve Exotel call history. Check Exotel API access and the selected region.' };
+    }
+  }
+
+  async bookExotelCall(tenantId: string, callSid: string, payload: any) {
+    const tenant = this.tenants[tenantId];
+    const call = tenant?.exotel_calls?.find((item) => item.call_sid === callSid);
+    if (!tenant || !call) return { error: 'Call not found.' };
+    const digits = (value: string) => value.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    if (call.caller_phone && digits(String(payload?.phone_number || '')) !== digits(call.caller_phone)) {
+      return { error: 'The booking phone number must match the caller ID recorded by Exotel.' };
+    }
+    const requestId = `exotel-${callSid}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
+    const result = await this.voiceTool(tenantId, { ...payload, action: 'book', request_id: requestId });
+    if ('error' in result) return result;
+    const appointment = result.appointment as Booking;
+    call.booking_id = appointment.id;
+    call.updated_at = new Date().toISOString();
+    this.persistState();
+    await this.waitForPendingPersistence();
+    return { ...result, call_sid: callSid };
+  }
+
+  async getExotelCallRecording(tenantId: string, callSid: string) {
+    const tenant = this.tenants[tenantId];
+    const call = tenant?.exotel_calls?.find((item) => item.call_sid === callSid);
+    if (!tenant || !call) return { error: 'Call not found.' };
+    const config = tenant.telephony;
+    const apiKey = this.decryptCredential(config?.exotel_api_key_encrypted) || process.env.EXOTEL_API_KEY || '';
+    const apiToken = this.decryptCredential(config?.exotel_api_token_encrypted) || process.env.EXOTEL_API_TOKEN || '';
+    if (!config?.account_sid || !apiKey || !apiToken) return { error: 'Exotel Call Details credentials are not configured for this clinic.' };
+    const host = config.region === 'singapore' ? 'https://api.exotel.com' : 'https://api.in.exotel.com';
+    const url = `${host}/v1/Accounts/${encodeURIComponent(config.account_sid)}/Calls/${encodeURIComponent(callSid)}?RecordingUrlValidity=10`;
+    try {
+      const response = await fetch(url, {
+        headers: { Authorization: `Basic ${Buffer.from(`${apiKey}:${apiToken}`).toString('base64')}`, Accept: 'application/json, application/xml' },
+      });
+      if (!response.ok) return { error: `Exotel call lookup failed with HTTP ${response.status}.` };
+      const raw = await response.text();
+      let recordingUrl = '';
+      let signedRecordingUrl = false;
+      try {
+        const parsed = JSON.parse(raw);
+        const callData = parsed?.Call || parsed?.call || parsed?.RestResponse?.Call || parsed;
+        const signed = callData?.PreSignedRecordingUrl || callData?.presigned_recording_url;
+        recordingUrl = String(signed || callData?.RecordingUrl || callData?.recording_url || '');
+        signedRecordingUrl = Boolean(signed);
+      } catch {
+        const match = /<(PreSignedRecordingUrl|RecordingUrl)>([\s\S]*?)<\/\1>/i.exec(raw);
+        recordingUrl = match?.[2]?.trim().replace(/&amp;/g, '&') || '';
+        signedRecordingUrl = match?.[1].toLowerCase() === 'presignedrecordingurl';
+      }
+      if (recordingUrl && !/^https:\/\//i.test(recordingUrl)) return { error: 'Exotel returned an invalid recording URL.' };
+      call.recording_available = Boolean(recordingUrl);
+      call.updated_at = new Date().toISOString();
+      this.persistState();
+      await this.waitForPendingPersistence();
+      return recordingUrl ? { call_sid: callSid, recording_url: recordingUrl, ...(signedRecordingUrl ? { expires_in_minutes: 10 } : {}) } : { call_sid: callSid, recording_url: null, message: 'No recording is available for this call.' };
+    } catch {
+      return { error: 'Could not retrieve the recording details from Exotel.' };
+    }
   }
 
   private isFutureClinicDate(tenantId: string, date: string, time: string) {

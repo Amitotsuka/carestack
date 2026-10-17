@@ -168,12 +168,28 @@ function App() {
 
   useEffect(() => {
     const handleExpiredSession = () => {
-      sessionStorage.setItem('carestack-auth-expired', '1');
-      window.location.reload();
+      localStorage.removeItem('carestack-session');
+      setSession(null);
+      setTenantData(null);
+      setPatients([]);
+      setBookings([]);
+      setTenants([]);
+      setPlans([]);
+      setAdminDashboard(null);
+      setClinicInterests([]);
+      setVoiceToolSecret('');
+      setTelephonyForm(emptyTelephony);
+      setActiveView('overview');
+      setNotice('');
+      setPage('landing');
+      setLoginRole('tenant');
+      setLoginForm({ email: `admin@${tenantBrand.domain}.in`, password: '' });
+      setLoginOpen(true);
+      setError('Your CareStack session expired. Sign in again to continue.');
     };
     window.addEventListener('carestack-auth-expired', handleExpiredSession);
     return () => window.removeEventListener('carestack-auth-expired', handleExpiredSession);
-  }, []);
+  }, [tenantBrand.domain]);
 
   useEffect(() => {
     request('/api/public/plans').then((data) => setPublicPlans(data.plans || [])).catch(() => {});
@@ -190,13 +206,6 @@ function App() {
   };
 
   useEffect(() => {
-    if (sessionStorage.getItem('carestack-auth-expired') === '1') {
-      sessionStorage.removeItem('carestack-auth-expired');
-      setPage('login');
-      setLoginOpen(true);
-      setError('Your CareStack session expired. Sign in again to continue.');
-      return;
-    }
     let parsed;
     try {
       parsed = JSON.parse(localStorage.getItem('carestack-session') || 'null');
