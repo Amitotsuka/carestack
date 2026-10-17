@@ -885,9 +885,11 @@ class AppService {
             if (typeof payload?.time !== 'string' || !payload.time.trim()) {
                 return { error: 'time is required as a string, for example 10 AM or 14:30.' };
             }
-            if (payload?.doctor_name !== undefined && typeof payload.doctor_name !== 'string') {
-                return { error: 'doctor_name must be a string. Use an empty string when the caller has no doctor preference.' };
+            if (payload?.doctor_name === undefined || payload?.doctor_name === null) {
+                return { error: 'doctor_name is required as a string. Use an empty string when the caller has no doctor preference.' };
             }
+            if (typeof payload.doctor_name !== 'string')
+                return { error: 'doctor_name must be a string. Use an empty string when the caller has no doctor preference.' };
             const date = this.normalizeVoiceDate(tenantId, payload.date);
             const time = this.normalizeVoiceTime(payload.time);
             const doctor = String(payload.doctor_name || '').trim();
@@ -900,7 +902,14 @@ class AppService {
             const policy = this.validateAgentBooking(tenantId, time);
             if (policy)
                 return { available: false, message: policy };
-            const candidates = doctor ? [doctor] : this.getClinicDoctorCandidates(tenantId);
+            const clinicDoctors = this.getClinicDoctorCandidates(tenantId);
+            const selectedDoctor = doctor
+                ? clinicDoctors.find((candidate) => candidate.toLocaleLowerCase() === doctor.toLocaleLowerCase())
+                : undefined;
+            if (doctor && !selectedDoctor) {
+                return { available: false, date, time, message: 'That doctor is not in the clinic doctor list. Use a name returned by clinic_info or leave doctor_name empty to check all configured doctors.' };
+            }
+            const candidates = selectedDoctor ? [selectedDoctor] : clinicDoctors;
             if (!candidates.length)
                 return { available: false, date, time, message: 'No doctors are configured for this clinic yet. Please ask the clinic team to add its doctors before booking.' };
             const matches = candidates.map((doctorName) => ({ doctor_name: doctorName, conflict: this.findScheduleConflict(tenantId, date, time, doctorName) }));
@@ -956,6 +965,13 @@ class AppService {
                 return { error: policy };
             const duration = this.appointmentDuration(tenantId);
             let assignedDoctor = doctor;
+            if (assignedDoctor) {
+                const knownDoctor = this.getClinicDoctorCandidates(tenantId)
+                    .find((candidate) => candidate.toLocaleLowerCase() === assignedDoctor.toLocaleLowerCase());
+                if (!knownDoctor)
+                    return { error: 'doctor_name must match a doctor configured for this clinic or present in its appointment records.' };
+                assignedDoctor = knownDoctor;
+            }
             if (!assignedDoctor) {
                 const availableDoctor = this.getClinicDoctorCandidates(tenantId)
                     .find((candidate) => !this.findScheduleConflict(tenantId, date, time, candidate, duration));

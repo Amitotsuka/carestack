@@ -990,7 +990,7 @@ export declare class AppController {
         idempotent_replay?: undefined;
         unavailable?: undefined;
     }>;
-    voiceTool(tenantId: string, suppliedSecret: string, body: any, authorizationHeader: string): Promise<{
+    voiceTool(tenantId: string, suppliedSecret: string, body: any, authorizationHeader: string, _tenantHeader: string, contentType: string): Promise<{
         clinic_name: string;
         phone_number: string;
         booking_hours: string;

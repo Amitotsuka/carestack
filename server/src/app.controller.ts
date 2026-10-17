@@ -133,6 +133,17 @@ class AppointmentStatusDto {
   status: string;
 }
 
+function safeVoiceBodyFieldNames(value: unknown, depth = 0): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth >= 2) return [];
+  return Object.keys(value).slice(0, 30).map((key) => {
+    const safeKey = /^[A-Za-z0-9_.-]{1,64}$/.test(key) ? key : '[other]';
+    const child = (value as Record<string, unknown>)[key];
+    return child && typeof child === 'object' && !Array.isArray(child)
+      ? { [safeKey]: safeVoiceBodyFieldNames(child, depth + 1) }
+      : safeKey;
+  });
+}
+
 @Controller()
 export class AppController {
   private readonly logger = new Logger(AppController.name);
@@ -372,11 +383,15 @@ export class AppController {
     @Headers('x-voice-tool-secret') suppliedSecret: string,
     @Body() body: any,
     @Headers('authorization') authorizationHeader: string,
+    @Headers('x-tenant-id') _tenantHeader: string,
+    @Headers('content-type') contentType: string,
   ) {
     const started = performance.now();
     const traceId = randomUUID();
-    const actionValue = String(body?.action || '').trim().toLowerCase();
-    const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
+    const rawAction = typeof body?.action === 'string' ? body.action.trim().toLowerCase() : '';
+    const supportedActions = ['clinic_info', 'faq', 'availability', 'book'];
+    const actionValue = supportedActions.includes(rawAction) ? rawAction : '';
+    const action = actionValue || 'unknown';
     let authenticationMs = 0;
     let dispatchMs = 0;
     let outcome = 'success';
@@ -416,6 +431,10 @@ export class AppController {
     } finally {
       this.logger.log(JSON.stringify({
         event: 'voice_tool.request_timing', trace_id: traceId, tenant_id: tenantId, action,
+        received_action: actionValue || (rawAction ? 'unsupported' : null),
+        action_field_present: Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'action')),
+        content_type: String(contentType || '').slice(0, 100) || null,
+        body_field_names: safeVoiceBodyFieldNames(body),
         authentication_ms: Number(authenticationMs.toFixed(2)), dispatch_ms: Number(dispatchMs.toFixed(2)),
         total_ms: Number((performance.now() - started).toFixed(2)), outcome,
       }));

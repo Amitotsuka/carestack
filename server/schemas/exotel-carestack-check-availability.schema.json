@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "const": "availability",
+      "description": "Required constant action."
+    },
+    "date": {
+      "type": "string",
+      "description": "Required caller date phrase: aaj/today, kal/tomorrow, or an explicit date. Relative dates are resolved at request time using the clinic timezone (Asia/Kolkata by default)."
+    },
+    "time": {
+      "type": "string",
+      "description": "Required appointment time. Normalize spoken times to HH:mm, for example 12 baje to 12:00 or shaam 5 baje to 17:00."
+    },
+    "doctor_name": {
+      "type": "string",
+      "description": "Required exact doctor name from clinic_info.doctors, or an empty string to check all configured/known clinic doctors. Never invent a doctor."
+    }
+  },
+  "required": ["action", "date", "time", "doctor_name"],
+  "additionalProperties": false
+}

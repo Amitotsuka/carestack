@@ -257,6 +257,17 @@ __decorate([
     (0, class_validator_1.IsIn)(['confirmed', 'completed', 'cancelled', 'no_show']),
     __metadata("design:type", String)
 ], AppointmentStatusDto.prototype, "status", void 0);
+function safeVoiceBodyFieldNames(value, depth = 0) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || depth >= 2)
+        return [];
+    return Object.keys(value).slice(0, 30).map((key) => {
+        const safeKey = /^[A-Za-z0-9_.-]{1,64}$/.test(key) ? key : '[other]';
+        const child = value[key];
+        return child && typeof child === 'object' && !Array.isArray(child)
+            ? { [safeKey]: safeVoiceBodyFieldNames(child, depth + 1) }
+            : safeKey;
+    });
+}
 let AppController = AppController_1 = class AppController {
     constructor(appService, jwtService) {
         this.appService = appService;
@@ -430,11 +441,13 @@ let AppController = AppController_1 = class AppController {
             throw new common_1.BadRequestException(result.error);
         return result;
     }
-    async voiceTool(tenantId, suppliedSecret, body, authorizationHeader) {
+    async voiceTool(tenantId, suppliedSecret, body, authorizationHeader, _tenantHeader, contentType) {
         const started = node_perf_hooks_1.performance.now();
         const traceId = (0, node_crypto_1.randomUUID)();
-        const actionValue = String(body?.action || '').trim().toLowerCase();
-        const action = ['clinic_info', 'faq', 'availability', 'book'].includes(actionValue) ? actionValue : 'unknown';
+        const rawAction = typeof body?.action === 'string' ? body.action.trim().toLowerCase() : '';
+        const supportedActions = ['clinic_info', 'faq', 'availability', 'book'];
+        const actionValue = supportedActions.includes(rawAction) ? rawAction : '';
+        const action = actionValue || 'unknown';
         let authenticationMs = 0;
         let dispatchMs = 0;
         let outcome = 'success';
@@ -473,6 +486,10 @@ let AppController = AppController_1 = class AppController {
         finally {
             this.logger.log(JSON.stringify({
                 event: 'voice_tool.request_timing', trace_id: traceId, tenant_id: tenantId, action,
+                received_action: actionValue || (rawAction ? 'unsupported' : null),
+                action_field_present: Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'action')),
+                content_type: String(contentType || '').slice(0, 100) || null,
+                body_field_names: safeVoiceBodyFieldNames(body),
                 authentication_ms: Number(authenticationMs.toFixed(2)), dispatch_ms: Number(dispatchMs.toFixed(2)),
                 total_ms: Number((node_perf_hooks_1.performance.now() - started).toFixed(2)), outcome,
             }));
@@ -786,8 +803,10 @@ __decorate([
     __param(1, (0, common_1.Headers)('x-voice-tool-secret')),
     __param(2, (0, common_1.Body)()),
     __param(3, (0, common_1.Headers)('authorization')),
+    __param(4, (0, common_1.Headers)('x-tenant-id')),
+    __param(5, (0, common_1.Headers)('content-type')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, Object, String]),
+    __metadata("design:paramtypes", [String, String, Object, String, String, String]),
     __metadata("design:returntype", Promise)
 ], AppController.prototype, "voiceTool", null);
 __decorate([

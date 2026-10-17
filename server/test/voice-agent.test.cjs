@@ -35,7 +35,7 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   service.tenants = {
     'tenant-skycare': {
       id: 'tenant-skycare', name: 'SkyCare Multi-Speciality', admin_phone: '+919876543210',
-      voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata' },
+      voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', clinic_context: { doctors: ['Dr. Test', 'Dr. Other'] } },
       telephony: { phone_number: '+919876543211' }, patients: [], bookings: [],
     },
     'tenant-other': {
@@ -108,6 +108,62 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   }
 });
 
+test('voice tool dispatch reads action from the top-level JSON body and safely diagnoses the request shape', async () => {
+  const { AppService } = require('../dist/app.service.js');
+  const { AppController } = require('../dist/app.controller.js');
+  const service = Object.create(AppService.prototype);
+  process.env.VOICE_TOOL_SECRET = 'test-master-secret-that-is-at-least-32-characters';
+  service.tenants = {
+    'tenant-skycare': {
+      id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      voice_agent: {
+        enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata',
+        clinic_context: { address: '', services: [], fees: '', doctors: ['Dr. Rao'], languages: ['Hindi'], instructions: '', faqs: [{ question: 'Where are you?', answer: 'At the configured clinic address.' }] },
+      },
+    },
+  };
+  service.persistState = () => {};
+  service.isFutureClinicDate = () => true;
+  const controller = new AppController(service, null);
+  const secret = service.getVoiceToolSecret('tenant-skycare');
+  const emittedLogs = [];
+  controller.logger = { log: (line) => emittedLogs.push(line) };
+
+  // Exotel must POST action as a top-level JSON body property; URL, headers,
+  // and nested tool argument objects are not treated as the action.
+  const clinicInfo = await controller.voiceTool('tenant-skycare', secret, { action: 'clinic_info' }, '', '', 'application/json');
+  assert.equal(clinicInfo.clinic_name, 'SkyCare');
+  const faq = await controller.voiceTool('tenant-skycare', secret, { action: 'faq', question: 'Where are you?' }, '', '', 'application/json');
+  assert.equal(faq.matched, true);
+  const availability = await controller.voiceTool('tenant-skycare', secret, {
+    action: 'availability', date: '2099-04-10', time: '11:00', doctor_name: 'Dr. Rao',
+  }, '', '', 'application/json');
+  assert.equal(availability.available, true);
+  const booking = await controller.voiceTool('tenant-skycare', secret, {
+    action: 'book', request_id: 'exotel-call-001', confirmed: true, patient_name: 'Sensitive Patient Name',
+    phone_number: '+919876543210', doctor_name: 'Dr. Rao', date: '2099-04-10', time: '11:00', reason: 'Consultation',
+  }, '', '', 'application/json');
+  assert.equal(booking.appointment.id, 'VOICE-exotel-call-001');
+
+  const shapeLog = JSON.parse(emittedLogs[1]);
+  assert.equal(shapeLog.event, 'voice_tool.request_timing');
+  assert.equal(shapeLog.received_action, 'faq');
+  assert.equal(shapeLog.content_type, 'application/json');
+  assert.deepEqual(shapeLog.body_field_names, ['action', 'question']);
+  assert.doesNotMatch(emittedLogs.join('\n'), /test-master-secret|Sensitive Patient Name|\+919876543210|Consultation/);
+
+  await assert.rejects(
+    controller.voiceTool('tenant-skycare', secret, { arguments: { action: 'clinic_info' } }, '', '', 'application/json'),
+    /Unsupported action/,
+  );
+  await assert.rejects(controller.voiceTool('tenant-skycare', secret, {}, '', '', 'application/json'), /Unsupported action/);
+  await assert.rejects(controller.voiceTool('tenant-skycare', secret, { action: 'appointments' }, '', '', 'application/json'), /Unsupported action/);
+  const unsupportedLog = JSON.parse(emittedLogs.at(-1));
+  assert.equal(unsupportedLog.received_action, 'unsupported');
+  assert.equal(unsupportedLog.action_field_present, true);
+  assert.deepEqual(unsupportedLog.body_field_names, ['action']);
+});
+
 test('availability accepts the Exotel schema fields and Hinglish dates without inventing a doctor', async () => {
   const { AppService } = require('../dist/app.service.js');
   const service = Object.create(AppService.prototype);
@@ -117,16 +173,41 @@ test('availability accepts the Exotel schema fields and Hinglish dates without i
       id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
       voice_agent: {
         enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata',
-        clinic_context: { doctors: ['Dr. Rao'], services: [], faqs: [], languages: ['Hindi', 'English'] },
+        clinic_context: { doctors: ['Dr. Rao', 'Dr. Mehta'], services: [], faqs: [], languages: ['Hindi', 'English'] },
       },
     },
   };
   service.persistState = () => {};
+  // Keep these parser/tool-contract tests independent of the time of day they run.
+  service.isFutureClinicDate = () => true;
 
-  // This is the argument shape the Exotel schema must send for “aaj 11 baje”.
+  // The Exotel tool schema requires all four inputs, even when no doctor is preferred.
+  const availabilitySchema = require('../schemas/exotel-carestack-check-availability.schema.json');
+  assert.deepEqual(availabilitySchema.required, ['action', 'date', 'time', 'doctor_name']);
+  for (const field of availabilitySchema.required) assert.equal(availabilitySchema.properties[field].type, 'string');
+
+  // The exact four-field argument shape required by the Exotel error contract
+  // for “aaj 12 baje”. Backend date normalization uses the runtime clinic date.
+  const todayRequest = { action: 'availability', date: 'aaj', time: '12:00', doctor_name: '' };
+  assert.deepEqual(Object.keys(todayRequest), availabilitySchema.required);
   const hinglishDate = service.normalizeVoiceDate('tenant-skycare', 'aaj');
-  assert.match(hinglishDate, /^\d{4}-\d{2}-\d{2}$/);
-  assert.equal(service.normalizeVoiceTime('11 baje'), '11:00');
+  const expectedToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  assert.equal(hinglishDate, expectedToday);
+  assert.equal(service.normalizeVoiceTime('12 baje'), '12:00');
+  assert.equal(service.normalizeVoiceDate('tenant-skycare', 'kal'), service.normalizeVoiceDate('tenant-skycare', 'tomorrow'));
+  assert.equal(service.normalizeVoiceTime('shaam 5 baje'), '17:00');
+
+  const todayAvailability = await service.voiceTool('tenant-skycare', todayRequest);
+  assert.equal(todayAvailability.date, expectedToday);
+  assert.equal(todayAvailability.time, '12:00');
+  assert.deepEqual(todayAvailability.available_doctors, ['Dr. Rao', 'Dr. Mehta']);
+
+  const eveningRequest = { action: 'availability', date: 'kal', time: '17:00', doctor_name: '' };
+  assert.deepEqual(Object.keys(eveningRequest), availabilitySchema.required);
+  const eveningAvailability = await service.voiceTool('tenant-skycare', eveningRequest);
+  assert.equal(eveningAvailability.date, service.normalizeVoiceDate('tenant-skycare', 'tomorrow'));
+  assert.equal(eveningAvailability.time, '17:00');
+  assert.deepEqual(eveningAvailability.available_doctors, ['Dr. Rao', 'Dr. Mehta']);
 
   const available = await service.voiceTool('tenant-skycare', {
     action: 'availability', date: 'kal', time: '11 baje', doctor_name: '',
@@ -135,7 +216,12 @@ test('availability accepts the Exotel schema fields and Hinglish dates without i
   assert.equal(available.time, '11:00');
   assert.equal(available.available, true);
   assert.equal(available.doctor_name, 'Dr. Rao');
-  assert.deepEqual(available.available_doctors, ['Dr. Rao']);
+  assert.deepEqual(available.available_doctors, ['Dr. Rao', 'Dr. Mehta']);
+  const unknownDoctor = await service.voiceTool('tenant-skycare', {
+    action: 'availability', date: 'kal', time: '11 baje', doctor_name: 'Dr. Invented',
+  });
+  assert.equal(unknownDoctor.available, false);
+  assert.match(unknownDoctor.message, /not in the clinic doctor list/);
 
   const noDoctorConfigured = {
     id: 'tenant-empty', name: 'No Doctors', admin_phone: '+919876543210', patients: [], bookings: [],
@@ -161,6 +247,7 @@ test('availability rejects missing or wrongly typed required tool arguments', as
   };
   assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', time: '11:00' })).error, /date is required as a string/);
   assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', date: 'tomorrow' })).error, /time is required as a string/);
+  assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', date: 'tomorrow', time: '11:00' })).error, /doctor_name is required as a string/);
   assert.match((await service.voiceTool('tenant-skycare', { action: 'availability', date: 'tomorrow', time: '11:00', doctor_name: 42 })).error, /doctor_name must be a string/);
 });
 
@@ -189,7 +276,7 @@ test('voice booking does not report success when appointment persistence fails',
   service.tenants = {
     'tenant-skycare': {
       id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
-      voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata' },
+      voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', clinic_context: { doctors: ['Dr. Test'] } },
     },
   };
   service.pendingPostgresWrite = Promise.resolve();
