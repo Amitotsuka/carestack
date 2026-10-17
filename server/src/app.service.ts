@@ -942,6 +942,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name: tenant.name,
         phone_number: tenant.telephony?.phone_number || tenant.admin_phone,
         booking_hours: hours.availability === 'all_day' ? 'all day' : `${hours.open_time}–${hours.close_time} ${hours.timezone}`,
+        availability_source: 'portal appointment calendar',
         appointment_duration_minutes: this.appointmentDuration(tenantId),
         address: context.address || null, services: context.services, fees: context.fees || null, doctors: context.doctors,
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
@@ -978,22 +979,48 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         ? clinicDoctors.find((candidate) => candidate.toLocaleLowerCase() === doctor.toLocaleLowerCase())
         : undefined;
       if (doctor && !selectedDoctor) {
-        return { available: false, date, time, message: 'That doctor is not in the clinic doctor list. Use a name returned by clinic_info or leave doctor_name empty to check all configured doctors.' };
+        return { check_status: 'error', available: null, date, time, message: 'Availability was not checked because that doctor is not in the clinic doctor list. Use an exact name returned by clinic_info or leave doctor_name empty to check all configured doctors.' };
       }
       const candidates = selectedDoctor ? [selectedDoctor] : clinicDoctors;
-      if (!candidates.length) return { available: false, date, time, message: 'No doctors are configured for this clinic yet. Please ask the clinic team to add its doctors before booking.' };
+      if (!candidates.length) return { check_status: 'error', available: null, date, time, message: 'Availability was not checked because no doctors are configured for this clinic. Please ask the clinic team to add its doctors before booking.' };
       const matches = candidates.map((doctorName) => ({ doctor_name: doctorName, conflict: this.findScheduleConflict(tenantId, date, time, doctorName) }));
       const selected = matches.find((candidate) => !candidate.conflict);
+      const availableSlots: Array<{ time: string; doctor_names: string[] }> = [];
+      if (!selected) {
+        const requestedStart = this.timeToMinutes(time)!;
+        const duration = this.appointmentDuration(tenantId);
+        const settings = this.getVoiceAgent(tenantId);
+        const opening = settings.availability === 'business_hours' ? (this.timeToMinutes(settings.open_time) ?? 0) : 0;
+        const closing = settings.availability === 'business_hours' ? (this.timeToMinutes(settings.close_time) ?? 1440) : 1440;
+        // Return real alternatives from the same appointment calendar, nearest first.
+        for (let offset = 15; offset < 1440 && availableSlots.length < 3; offset += 15) {
+          const starts = [requestedStart + offset, requestedStart - offset];
+          for (const start of starts) {
+            if (start < opening || start + duration > closing || start + duration > 1440) continue;
+            const candidateTime = this.minutesToTime(start);
+            if (!this.isFutureClinicDate(tenantId, date, candidateTime)) continue;
+            const freeDoctors = candidates.filter((doctorName) => !this.findScheduleConflict(tenantId, date, candidateTime, doctorName, duration));
+            if (freeDoctors.length) {
+              if (!availableSlots.some((slot) => slot.time === candidateTime)) {
+                availableSlots.push({ time: candidateTime, doctor_names: freeDoctors });
+                if (availableSlots.length >= 3) break;
+              }
+            }
+          }
+        }
+        availableSlots.sort((left, right) => Math.abs((this.timeToMinutes(left.time) ?? 0) - requestedStart) - Math.abs((this.timeToMinutes(right.time) ?? 0) - requestedStart));
+      }
       return {
-        available: Boolean(selected), date, time, duration_minutes: this.appointmentDuration(tenantId),
+        check_status: 'checked', available: Boolean(selected), date, time, duration_minutes: this.appointmentDuration(tenantId),
         ...(selected ? { doctor_name: selected.doctor_name } : { doctor_name: doctor || undefined }),
         available_doctors: matches.filter((candidate) => !candidate.conflict).map((candidate) => candidate.doctor_name),
-        source: 'clinic appointment calendar',
+        ...(availableSlots.length ? { available_slots: availableSlots } : {}),
+        source: 'portal appointment calendar',
         message: selected
           ? `The requested time is available with ${selected.doctor_name}. Tell the caller which doctor is available and get confirmation before booking.`
           : doctor && matches[0].conflict
             ? this.scheduleConflictMessage(tenantId, matches[0].conflict)
-            : 'No configured doctor is free at that time. Ask the caller for another time.',
+            : 'No configured doctor is free at that time. Offer one of the returned available_slots, if any, or ask the caller for another time.',
       };
     }
     if (action === 'book') {
