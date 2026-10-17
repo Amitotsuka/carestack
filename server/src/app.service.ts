@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
@@ -15,6 +15,13 @@ type TenantUser = {
   role: string;
   password_hash: string;
   permissions?: string[];
+  must_change_password?: boolean;
+  temporary_password_expires_at?: number;
+  password_reset_code_hash?: string;
+  password_reset_expires_at?: number;
+  avatar_data_url?: string | null;
+  phone?: string;
+  employee_id?: string;
 };
 
 const staffPermissions = new Set([
@@ -118,10 +125,14 @@ const defaultTelephony = { provider: 'exotel' as const, voice_provider: 'sarvam'
 export class AppService implements OnModuleInit, OnModuleDestroy {
   private tenants: Record<string, Tenant> = {};
   private clinicInterests: ClinicInterest[] = [];
-  private readonly superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'superadmin@hospital.ai')).trim().toLowerCase();
-  private readonly superAdminPasswordHash = process.env.SUPER_ADMIN_PASSWORD
+  private superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'superadmin@hospital.ai')).trim().toLowerCase();
+  private superAdminPasswordHash = process.env.SUPER_ADMIN_PASSWORD
     ? bcrypt.hashSync(process.env.SUPER_ADMIN_PASSWORD, 12)
     : process.env.NODE_ENV === 'production' ? '' : bcrypt.hashSync('admin123', 12);
+  private superAdminName = 'Super Admin';
+  private superAdminAvatarDataUrl: string | null = null;
+  private superAdminPhone = '';
+  private superAdminEmployeeId = '';
   private planCatalog: Plan[] = [
     { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3 },
     { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
@@ -132,8 +143,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   private pendingPostgresWrite: Promise<void> = Promise.resolve();
   private pendingPostgresPayload?: string;
   private postgresWriteScheduled = false;
+  private readonly resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+  private readonly emailFrom = (process.env.EMAIL_FROM || '').trim();
 
   constructor() {
+    this.superAdminEmployeeId = this.createEmployeeId('Platform');
     const databaseUrl = process.env.DATABASE_URL?.trim();
     if (databaseUrl) {
       // Keep a single shared pool for this service process. Bound connection
@@ -172,6 +186,25 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   }
 
+  private async sendEmail(to: string, subject: string, text: string) {
+    this.assertEmailConfigured();
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.resendApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: this.emailFrom, to: [to], subject, text }),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`Email delivery failed${detail ? `: ${detail.slice(0, 300)}` : '.'}`);
+    }
+  }
+
+  private assertEmailConfigured() {
+    if (!this.resendApiKey || !this.emailFrom) {
+      throw new Error('Email delivery is not configured. Set RESEND_API_KEY and EMAIL_FROM on the API service.');
+    }
+  }
+
   async onModuleInit() {
     if (!this.postgres) return;
     const started = performance.now();
@@ -204,11 +237,36 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   private loadState(payload: string | object) {
-    const state = (typeof payload === 'string' ? JSON.parse(payload) : payload) as { tenants?: Record<string, Tenant & { users: Array<TenantUser & { password?: string }> }>; planCatalog?: Plan[]; clinicInterests?: ClinicInterest[] };
+    const state = (typeof payload === 'string' ? JSON.parse(payload) : payload) as {
+      tenants?: Record<string, Tenant & { users: Array<TenantUser & { password?: string }> }>;
+      planCatalog?: Plan[];
+      clinicInterests?: ClinicInterest[];
+      superAdminProfile?: { name?: string; email?: string; avatar_data_url?: string | null; password_hash?: string; phone?: string; employee_id?: string };
+    };
     this.tenants = state.tenants || {};
     this.planCatalog = state.planCatalog || this.planCatalog;
     this.clinicInterests = state.clinicInterests || [];
-    return this.migratePasswordHashes();
+    if (state.superAdminProfile) {
+      this.superAdminName = state.superAdminProfile.name || this.superAdminName;
+      this.superAdminEmail = (state.superAdminProfile.email || this.superAdminEmail).trim().toLowerCase();
+      this.superAdminAvatarDataUrl = state.superAdminProfile.avatar_data_url || null;
+      this.superAdminPasswordHash = state.superAdminProfile.password_hash || this.superAdminPasswordHash;
+      this.superAdminPhone = state.superAdminProfile.phone || '';
+      this.superAdminEmployeeId = state.superAdminProfile.employee_id || this.superAdminEmployeeId;
+    }
+    let migrated = this.migratePasswordHashes();
+    if (!state.superAdminProfile || !state.superAdminProfile.employee_id || state.superAdminProfile.phone === undefined) migrated = true;
+    return migrated;
+  }
+
+  private createEmployeeId(clinicName: string) {
+    const prefix = String(clinicName || 'Clinic').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'CLINIC';
+    const employeeIds = [this.superAdminEmployeeId, ...Object.values(this.tenants).flatMap((tenant) => tenant.users.map((user) => user.employee_id || ''))];
+    const usedNumbers = new Set(employeeIds.filter((id) => id.startsWith(`${prefix}-`)).map((id) => Number(id.slice(prefix.length + 1))).filter(Number.isSafeInteger));
+    let sequence = 1;
+    while (usedNumbers.has(sequence)) sequence += 1;
+    return `${prefix}-${String(sequence).padStart(4, '0')}`;
   }
 
   private migratePasswordHashes() {
@@ -247,6 +305,17 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         migrated = true;
       }
       tenant.users.forEach((user) => {
+        if (user.role !== 'tenant_admin') return;
+        if (!user.employee_id) {
+          user.employee_id = this.createEmployeeId(tenant.name);
+          migrated = true;
+        }
+        if (!user.phone && tenant.admin_phone) {
+          user.phone = tenant.admin_phone;
+          migrated = true;
+        }
+      });
+      tenant.users.forEach((user) => {
       const legacyUser = user as TenantUser & { password?: string };
       if (!legacyUser.password_hash && legacyUser.password) {
         legacyUser.password_hash = bcrypt.hashSync(legacyUser.password, 12);
@@ -265,7 +334,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   private persistState() {
-    const payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests });
+    const payload = this.serializeState();
     if (this.postgres) {
       // Each payload contains a full state snapshot. While one snapshot is
       // being written, later mutations can replace the queued snapshot with a
@@ -287,6 +356,22 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     `).run(payload, new Date().toISOString());
   }
 
+  private serializeState() {
+    return JSON.stringify({
+      tenants: this.tenants,
+      planCatalog: this.planCatalog,
+      clinicInterests: this.clinicInterests,
+      superAdminProfile: {
+        name: this.superAdminName,
+        email: this.superAdminEmail,
+        avatar_data_url: this.superAdminAvatarDataUrl,
+        password_hash: this.superAdminPasswordHash,
+        phone: this.superAdminPhone,
+        employee_id: this.superAdminEmployeeId,
+      },
+    });
+  }
+
   private async flushPendingPostgresWrites() {
     try {
       while (this.pendingPostgresPayload !== undefined) {
@@ -299,7 +384,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async writePostgresState(payload = JSON.stringify({ tenants: this.tenants, planCatalog: this.planCatalog, clinicInterests: this.clinicInterests })) {
+  private async writePostgresState(payload = this.serializeState()) {
     if (!this.postgres) return;
     const started = performance.now();
     try {
@@ -338,6 +423,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           email: 'admin@skycare.in',
           role: 'tenant_admin',
           password_hash: bcrypt.hashSync(process.env.TENANT_DEFAULT_PASSWORD || 'admin123', 12),
+          phone: '+91 99887 76655',
+          employee_id: 'SKYCARE-MULTI-SPECIALITY-0001',
         },
       ],
       patients: [
@@ -376,15 +463,19 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       return {
         user_id: 'super-admin',
         role: 'super_admin',
-        name: 'Super Admin',
+        name: this.superAdminName,
         tenant_id: null,
         email,
+        avatar_data_url: this.superAdminAvatarDataUrl,
+        phone: this.superAdminPhone,
+        employee_id: this.superAdminEmployeeId,
       };
     }
 
     for (const tenant of Object.values(this.tenants)) {
       for (const user of tenant.users) {
-        if (user.email === email && await bcrypt.compare(password, user.password_hash)) {
+        if (user.email.toLowerCase() === email.toLowerCase() && await bcrypt.compare(password, user.password_hash)) {
+          if (user.must_change_password && user.temporary_password_expires_at && user.temporary_password_expires_at < Date.now()) return null;
           if (tenant.subscription_status !== 'active') return null;
           return {
             user_id: user.id,
@@ -393,7 +484,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
             tenant_id: tenant.id,
             tenant_domain: tenant.domain,
             email,
+            avatar_data_url: user.avatar_data_url || null,
+            ...(user.role === 'tenant_admin' ? { phone: user.phone || tenant.admin_phone, employee_id: user.employee_id } : {}),
             permissions: user.role === 'tenant_admin' ? [...staffPermissions] : (user.permissions || []),
+            must_change_password: Boolean(user.must_change_password),
           };
         }
       }
@@ -576,7 +670,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  createTenant(payload: any) {
+  async createTenant(payload: any) {
+    this.assertEmailConfigured();
     const tenantDomain = String(payload.tenant_domain ?? '').trim().toLowerCase();
     const adminEmail = String(payload.admin_email ?? '').trim().toLowerCase();
     const duplicate = Object.values(this.tenants).some((tenant) =>
@@ -590,12 +685,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const adminId = `user-${tenantId}`;
     const requestedPlan = String(payload.plan || 'growth').toLowerCase();
     const plan = this.planCatalog.some((item) => item.id === requestedPlan) ? requestedPlan : 'growth';
-    const adminPasswordWasProvided = typeof payload.admin_password === 'string' && payload.admin_password.length > 0;
-    const temporaryPassword = adminPasswordWasProvided
-      ? payload.admin_password
-      : process.env.NODE_ENV === 'production'
-        ? randomBytes(18).toString('base64url')
-        : process.env.TENANT_DEFAULT_PASSWORD || 'admin123';
+    const temporaryPassword = String(randomInt(10000000, 100000000));
+    const temporaryPasswordExpiresAt = Date.now() + 24 * 60 * 60 * 1000;
     const tenant: Tenant = {
       id: tenantId,
       name: payload.tenant_name,
@@ -616,6 +707,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           email: adminEmail,
           role: 'tenant_admin',
           password_hash: bcrypt.hashSync(temporaryPassword, 12),
+          must_change_password: true,
+          temporary_password_expires_at: temporaryPasswordExpiresAt,
+          phone: String(payload.admin_phone || '').trim(),
+          employee_id: this.createEmployeeId(payload.tenant_name),
         },
       ],
       patients: [],
@@ -625,18 +720,24 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       telephony: { ...defaultTelephony },
     };
     this.updateAdminPrice(tenant);
+    const frontendUrl = (process.env.FRONTEND_PUBLIC_URL || 'https://carestack-uat-web.onrender.com').replace(/\/+$/, '');
+    await this.sendEmail(
+      adminEmail,
+      `Your ${tenant.name} clinic account is ready`,
+      `Hello ${tenant.admin_name},\n\nYour clinic account for ${tenant.name} is ready.\n\nSign in: ${frontendUrl}/?tenant=${encodeURIComponent(tenantDomain)}\nEmail: ${adminEmail}\nOne-time password: ${temporaryPassword}\n\nThis password expires in 24 hours and must be changed after your first sign-in. If you did not expect this email, contact your clinic administrator.`,
+    );
     this.tenants[tenantId] = tenant;
     this.persistState();
+    await this.pendingPostgresWrite;
     return {
       tenant_id: tenant.id,
       tenant_name: tenant.name,
       domain: tenant.domain,
       admin_email: tenant.admin_email,
-      password_set: adminPasswordWasProvided,
+      email_sent: true,
       plan: tenant.plan,
       subscription_status: tenant.subscription_status,
       billing_cycle: tenant.billing_cycle,
-      ...(adminPasswordWasProvided ? {} : { temporary_password: temporaryPassword }),
     };
   }
 
@@ -673,10 +774,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       tenant.subscription_status = payload.subscription_status;
     }
 
-    const adminUser = tenant.users[0];
+    const adminUser = tenant.users.find((user) => user.role === 'tenant_admin') || tenant.users[0];
     if (adminUser) {
       adminUser.name = tenant.admin_name;
       adminUser.email = tenant.admin_email;
+      adminUser.phone = tenant.admin_phone;
     }
     this.updateAdminPrice(tenant);
     this.persistState();
@@ -692,10 +794,152 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     if (!adminUser) return 'admin_not_found' as const;
 
     adminUser.password_hash = bcrypt.hashSync(password, 12);
+    adminUser.must_change_password = false;
+    delete adminUser.temporary_password_expires_at;
     this.persistState();
     // Wait for PostgreSQL persistence before reporting success to the super-admin.
     await this.pendingPostgresWrite;
     return 'updated' as const;
+  }
+
+  async changeOwnPassword(tenantId: string | null, userId: string, currentPassword: string | undefined, password: string) {
+    if (userId === 'super-admin' && tenantId === null) {
+      if (!this.superAdminPasswordHash) return 'not_found' as const;
+      if (!currentPassword || !await bcrypt.compare(currentPassword, this.superAdminPasswordHash)) return 'current_password_invalid' as const;
+      this.superAdminPasswordHash = bcrypt.hashSync(password, 12);
+      this.persistState();
+      await this.pendingPostgresWrite;
+      return 'updated' as const;
+    }
+
+    const user = tenantId ? this.tenants[tenantId]?.users.find((item) => item.id === userId) : undefined;
+    if (!user) return 'not_found' as const;
+    if (!user.must_change_password && (!currentPassword || !await bcrypt.compare(currentPassword, user.password_hash))) return 'current_password_invalid' as const;
+    user.password_hash = bcrypt.hashSync(password, 12);
+    user.must_change_password = false;
+    delete user.temporary_password_expires_at;
+    delete user.password_reset_code_hash;
+    delete user.password_reset_expires_at;
+    this.persistState();
+    await this.pendingPostgresWrite;
+    return 'updated' as const;
+  }
+
+  getOwnProfile(tenantId: string | null, userId: string) {
+    if (userId === 'super-admin' && tenantId === null) {
+      return {
+        user_id: userId,
+        role: 'super_admin',
+        tenant_id: null,
+        name: this.superAdminName,
+        email: this.superAdminEmail,
+        avatar_data_url: this.superAdminAvatarDataUrl,
+        phone: this.superAdminPhone,
+        employee_id: this.superAdminEmployeeId,
+      };
+    }
+    const tenant = tenantId ? this.tenants[tenantId] : undefined;
+    const user = tenant?.users.find((item) => item.id === userId && item.role === 'tenant_admin');
+    if (!tenant || !user) return null;
+    user.employee_id ||= this.createEmployeeId(tenant.name);
+    return {
+      user_id: user.id,
+      role: user.role,
+      tenant_id: tenant.id,
+      tenant_domain: tenant.domain,
+      name: user.name,
+      email: user.email,
+      avatar_data_url: user.avatar_data_url || null,
+      phone: user.phone || tenant.admin_phone || '',
+      employee_id: user.employee_id,
+      permissions: [...staffPermissions],
+      must_change_password: Boolean(user.must_change_password),
+    };
+  }
+
+  async updateOwnProfile(tenantId: string | null, userId: string, profile: { name: string; email: string; phone?: string | null; avatar_data_url?: string | null }) {
+    const name = profile.name.trim();
+    const email = profile.email.trim().toLowerCase();
+    if (!name || !email) return 'invalid' as const;
+    const emailTaken = Object.values(this.tenants).some((tenant) => tenant.users.some((user) =>
+      user.email.toLowerCase() === email && !(tenant.id === tenantId && user.id === userId))) ||
+      (email === this.superAdminEmail && userId !== 'super-admin');
+    if (emailTaken) return 'email_taken' as const;
+
+    if (userId === 'super-admin' && tenantId === null) {
+      this.superAdminName = name;
+      this.superAdminEmail = email;
+      if (profile.avatar_data_url !== undefined) this.superAdminAvatarDataUrl = profile.avatar_data_url || null;
+      if (profile.phone !== undefined) this.superAdminPhone = profile.phone?.trim() || '';
+      this.persistState();
+      await this.pendingPostgresWrite;
+      return { user_id: userId, role: 'super_admin', tenant_id: null, name, email, avatar_data_url: this.superAdminAvatarDataUrl, phone: this.superAdminPhone, employee_id: this.superAdminEmployeeId };
+    }
+
+    const tenant = tenantId ? this.tenants[tenantId] : undefined;
+    const user = tenant?.users.find((item) => item.id === userId);
+    if (!tenant || !user || user.role !== 'tenant_admin') return 'not_found' as const;
+    user.name = name;
+    user.email = email;
+    user.employee_id ||= this.createEmployeeId(tenant.name);
+    if (profile.avatar_data_url !== undefined) user.avatar_data_url = profile.avatar_data_url || null;
+    if (profile.phone !== undefined) user.phone = profile.phone?.trim() || '';
+    tenant.admin_name = name;
+    tenant.admin_email = email;
+    if (profile.phone !== undefined) tenant.admin_phone = profile.phone?.trim() || '';
+    this.persistState();
+    await this.pendingPostgresWrite;
+    return {
+      user_id: user.id,
+      role: user.role,
+      tenant_id: tenant.id,
+      tenant_domain: tenant.domain,
+      name: user.name,
+      email: user.email,
+      avatar_data_url: user.avatar_data_url || null,
+      phone: user.phone || '',
+      employee_id: user.employee_id,
+      permissions: [...staffPermissions],
+      must_change_password: Boolean(user.must_change_password),
+    };
+  }
+
+  async requestPasswordReset(email: string) {
+    this.assertEmailConfigured();
+    const normalizedEmail = email.trim().toLowerCase();
+    const tenant = Object.values(this.tenants).find((item) => item.users.some((user) => user.email.toLowerCase() === normalizedEmail));
+    const user = tenant?.users.find((item) => item.email.toLowerCase() === normalizedEmail);
+    if (tenant && user) {
+      const code = String(randomInt(0, 1000000)).padStart(6, '0');
+      user.password_reset_code_hash = createHash('sha256').update(code).digest('hex');
+      user.password_reset_expires_at = Date.now() + 15 * 60 * 1000;
+      this.persistState();
+      await this.pendingPostgresWrite;
+      await this.sendEmail(
+        user.email,
+        'Your CareStack password reset code',
+        `Hello ${user.name},\n\nYour password reset code is: ${code}\n\nIt expires in 15 minutes. If you did not request this code, you can ignore this email.`,
+      );
+    }
+    return { message: 'If an account matches that email, a password reset code has been sent.' };
+  }
+
+  async resetPassword(email: string, code: string, password: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = Object.values(this.tenants).flatMap((item) => item.users)
+      .find((item) => item.email.toLowerCase() === normalizedEmail);
+    if (!user?.password_reset_code_hash || !user.password_reset_expires_at || user.password_reset_expires_at < Date.now()) return false;
+    const suppliedHash = createHash('sha256').update(code).digest();
+    const savedHash = Buffer.from(user.password_reset_code_hash, 'hex');
+    if (savedHash.length !== suppliedHash.length || !timingSafeEqual(savedHash, suppliedHash)) return false;
+    user.password_hash = bcrypt.hashSync(password, 12);
+    user.must_change_password = false;
+    delete user.temporary_password_expires_at;
+    delete user.password_reset_code_hash;
+    delete user.password_reset_expires_at;
+    this.persistState();
+    await this.pendingPostgresWrite;
+    return true;
   }
 
   updateVoiceAgent(tenantId: string, payload: any) {

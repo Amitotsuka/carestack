@@ -52,20 +52,30 @@ type ClinicInterest = {
 export declare class AppService implements OnModuleInit, OnModuleDestroy {
     private tenants;
     private clinicInterests;
-    private readonly superAdminEmail;
-    private readonly superAdminPasswordHash;
+    private superAdminEmail;
+    private superAdminPasswordHash;
+    private superAdminName;
+    private superAdminAvatarDataUrl;
+    private superAdminPhone;
+    private superAdminEmployeeId;
     private planCatalog;
     private database?;
     private postgres?;
     private pendingPostgresWrite;
     private pendingPostgresPayload?;
     private postgresWriteScheduled;
+    private readonly resendApiKey;
+    private readonly emailFrom;
     constructor();
+    private sendEmail;
+    private assertEmailConfigured;
     onModuleInit(): Promise<void>;
     onModuleDestroy(): Promise<void>;
     private loadState;
+    private createEmployeeId;
     private migratePasswordHashes;
     private persistState;
+    private serializeState;
     private flushPendingPostgresWrites;
     private writePostgresState;
     private seed;
@@ -75,16 +85,21 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         name: string;
         tenant_id: any;
         email: string;
-        tenant_domain?: undefined;
-        permissions?: undefined;
+        avatar_data_url: string;
+        phone: string;
+        employee_id: string;
     } | {
+        permissions: string[];
+        must_change_password: boolean;
+        phone?: string;
+        employee_id?: string;
         user_id: string;
         role: string;
         name: string;
         tenant_id: string;
         tenant_domain: string;
         email: string;
-        permissions: string[];
+        avatar_data_url: string;
     }>;
     getStaffAccess(tenantId: string, userId: string): {
         tenant_id: string;
@@ -212,17 +227,16 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
             count: number;
         }[];
     };
-    createTenant(payload: any): {
-        temporary_password?: any;
+    createTenant(payload: any): Promise<{
         tenant_id: string;
         tenant_name: string;
         domain: string;
         admin_email: string;
-        password_set: boolean;
+        email_sent: boolean;
         plan: string;
         subscription_status: "active" | "paused";
         billing_cycle: "monthly" | "annual";
-    };
+    }>;
     updateTenant(tenantId: string, payload: any): {
         id: string;
         name: string;
@@ -284,6 +298,66 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         };
     };
     setTenantAdminPassword(tenantId: string, password: string): Promise<"not_found" | "admin_not_found" | "updated">;
+    changeOwnPassword(tenantId: string | null, userId: string, currentPassword: string | undefined, password: string): Promise<"not_found" | "updated" | "current_password_invalid">;
+    getOwnProfile(tenantId: string | null, userId: string): {
+        user_id: string;
+        role: string;
+        tenant_id: any;
+        name: string;
+        email: string;
+        avatar_data_url: string;
+        phone: string;
+        employee_id: string;
+        tenant_domain?: undefined;
+        permissions?: undefined;
+        must_change_password?: undefined;
+    } | {
+        user_id: string;
+        role: string;
+        tenant_id: string;
+        tenant_domain: string;
+        name: string;
+        email: string;
+        avatar_data_url: string;
+        phone: string;
+        employee_id: string;
+        permissions: string[];
+        must_change_password: boolean;
+    };
+    updateOwnProfile(tenantId: string | null, userId: string, profile: {
+        name: string;
+        email: string;
+        phone?: string | null;
+        avatar_data_url?: string | null;
+    }): Promise<"not_found" | "invalid" | "email_taken" | {
+        user_id: string;
+        role: string;
+        tenant_id: any;
+        name: string;
+        email: string;
+        avatar_data_url: string;
+        phone: string;
+        employee_id: string;
+        tenant_domain?: undefined;
+        permissions?: undefined;
+        must_change_password?: undefined;
+    } | {
+        user_id: string;
+        role: string;
+        tenant_id: string;
+        tenant_domain: string;
+        name: string;
+        email: string;
+        avatar_data_url: string;
+        phone: string;
+        employee_id: string;
+        permissions: string[];
+        must_change_password: boolean;
+    }>;
+    requestPasswordReset(email: string): Promise<{
+        message: string;
+    }>;
+    resetPassword(email: string, code: string, password: string): Promise<boolean>;
     updateVoiceAgent(tenantId: string, payload: any): false | {
         enabled: boolean;
         availability: "all_day" | "business_hours";

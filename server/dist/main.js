@@ -76,6 +76,8 @@ async function bootstrap() {
     app.getHttpAdapter().getInstance().disable('x-powered-by');
     app.use((0, helmet_1.default)());
     app.use('/api/auth/login', (0, express_rate_limit_1.default)({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false }));
+    app.use('/api/auth/password-reset/request', (0, express_rate_limit_1.default)({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false }));
+    app.use('/api/auth/password-reset/confirm', (0, express_rate_limit_1.default)({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false }));
     app.use('/api/public/clinic-interest', (0, express_rate_limit_1.default)({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false }));
     app.use('/api/voice/tools', (0, express_rate_limit_1.default)({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false }));
     app.use('/api/exotel/voicebot/webhooks', (0, express_rate_limit_1.default)({ windowMs: 60 * 1000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }));

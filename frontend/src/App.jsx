@@ -148,8 +148,24 @@ function App() {
   });
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginRole, setLoginRole] = useState('tenant');
+  const [loginMode, setLoginMode] = useState('login');
+  const [loginStatus, setLoginStatus] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
+  const [pendingPasswordSession, setPendingPasswordSession] = useState(null);
   const [activeView, setActiveView] = useState('overview');
   const [session, setSession] = useState(null);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const [profileForm, setProfileForm] = useState({ name: '', email: '', phone: '', employee_id: '', avatar_data_url: '' });
+  const [profileCurrentPassword, setProfileCurrentPassword] = useState('');
+  const [profileNewPassword, setProfileNewPassword] = useState('');
+  const [profilePasswordConfirm, setProfilePasswordConfirm] = useState('');
+  const [profilePasswordOpen, setProfilePasswordOpen] = useState(false);
+  const [profileNotice, setProfileNotice] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: `admin@${tenantBrand.domain}.in`, password: '' });
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -165,8 +181,6 @@ function App() {
   const [tenantPassword, setTenantPassword] = useState('');
   const [tenantPasswordConfirm, setTenantPasswordConfirm] = useState('');
   const [tenantManagementFormOpen, setTenantManagementFormOpen] = useState(false);
-  const [initialTenantPassword, setInitialTenantPassword] = useState('');
-  const [initialTenantPasswordConfirm, setInitialTenantPasswordConfirm] = useState('');
   const [editingTenantPassword, setEditingTenantPassword] = useState('');
   const [editingTenantPasswordConfirm, setEditingTenantPasswordConfirm] = useState('');
   const [planForm, setPlanForm] = useState(emptyPlan);
@@ -247,6 +261,9 @@ function App() {
       setNotice('');
       setPage('landing');
       setLoginRole('tenant');
+      setLoginMode('login');
+      setLoginStatus('');
+      setPendingPasswordSession(null);
       setLoginForm({ email: `admin@${tenantBrand.domain}.in`, password: '' });
       setLoginOpen(true);
       setError('Your CareStack session expired. Sign in again to continue.');
@@ -261,6 +278,12 @@ function App() {
 
   const openLogin = (role = 'tenant') => {
     setLoginRole(role);
+    setLoginMode('login');
+    setLoginStatus('');
+    setResetCode('');
+    setResetPassword('');
+    setResetPasswordConfirm('');
+    setPendingPasswordSession(null);
     setLoginForm({
       email: role === 'super_admin' ? 'superadmin@hospital.ai' : `admin@${tenantBrand.domain}.in`,
       password: '',
@@ -369,6 +392,13 @@ function App() {
 
       if (!data.access_token) throw new Error('The server did not issue an access token.');
       const nextSession = { ...user, access_token: data.access_token };
+      if (user.must_change_password) {
+        setPendingPasswordSession(nextSession);
+        setLoginMode('initial-password');
+        setLoginStatus('Your one-time password was accepted. Set a new password to finish signing in.');
+        setLoginForm((current) => ({ ...current, password: '' }));
+        return;
+      }
       localStorage.setItem('carestack-session', JSON.stringify(nextSession));
       setSession(nextSession);
       setLoginOpen(false);
@@ -384,6 +414,61 @@ function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const submitPasswordResetRequest = async (event) => {
+    event.preventDefault();
+    setError(''); setLoginStatus(''); setBusy(true);
+    try {
+      const response = await request('/api/auth/password-reset/request', {
+        method: 'POST', body: JSON.stringify({ email: loginForm.email.trim() }),
+      });
+      setLoginStatus(response.message || 'If an account matches that email, a reset code has been sent.');
+      setLoginMode('reset');
+    } catch (resetError) { setError(resetError.message); }
+    finally { setBusy(false); }
+  };
+
+  const submitPasswordReset = async (event) => {
+    event.preventDefault();
+    setError(''); setLoginStatus('');
+    if (resetPassword !== resetPasswordConfirm) { setError('The passwords do not match.'); return; }
+    setBusy(true);
+    try {
+      const response = await request('/api/auth/password-reset/confirm', {
+        method: 'POST', body: JSON.stringify({ email: loginForm.email.trim(), code: resetCode, password: resetPassword }),
+      });
+      setLoginMode('login');
+      setResetCode(''); setResetPassword(''); setResetPasswordConfirm('');
+      setLoginForm((current) => ({ ...current, password: '' }));
+      setLoginStatus(response.message || 'Password updated. You can now sign in.');
+    } catch (resetError) { setError(resetError.message); }
+    finally { setBusy(false); }
+  };
+
+  const submitFirstPassword = async (event) => {
+    event.preventDefault();
+    setError(''); setLoginStatus('');
+    if (resetPassword !== resetPasswordConfirm) { setError('The passwords do not match.'); return; }
+    if (!pendingPasswordSession?.access_token) { setError('Please sign in again with your one-time password.'); setLoginMode('login'); return; }
+    setBusy(true);
+    try {
+      await request('/api/auth/password/change', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${pendingPasswordSession.access_token}` },
+        body: JSON.stringify({ password: resetPassword }),
+      });
+      const nextSession = { ...pendingPasswordSession, must_change_password: false };
+      localStorage.setItem('carestack-session', JSON.stringify(nextSession));
+      setSession(nextSession);
+      setPendingPasswordSession(null);
+      setLoginOpen(false);
+      setLoginMode('login');
+      setPage('dashboard');
+      setActiveView(availableClinicViews(nextSession)[0] || 'overview');
+      await loadDashboard(nextSession.tenant_id);
+    } catch (changeError) { setError(changeError.message); }
+    finally { setBusy(false); }
   };
 
   const loadDashboard = async (tenantId, throwOnError = false, silent = false, activityRange = overviewActivityRange) => {
@@ -715,7 +800,6 @@ function App() {
     event.preventDefault();
     setNotice('');
     setError('');
-    const isSettingInitialPassword = !editingTenantId;
     const isChangingTenantPassword = Boolean(editingTenantId && (editingTenantPassword || editingTenantPasswordConfirm));
     if (isChangingTenantPassword && (!editingTenantPassword || !editingTenantPasswordConfirm)) {
       setError('Enter and confirm the new administrator password.');
@@ -725,15 +809,11 @@ function App() {
       setError('The administrator passwords do not match.');
       return;
     }
-    if (isSettingInitialPassword && initialTenantPassword !== initialTenantPasswordConfirm) {
-      setError('The administrator passwords do not match.');
-      return;
-    }
     setBusy(true);
     try {
       const data = await request(editingTenantId ? `/api/tenants/${editingTenantId}` : '/api/tenants/onboard', {
         method: editingTenantId ? 'PUT' : 'POST',
-        body: JSON.stringify(editingTenantId ? tenantForm : { ...tenantForm, admin_password: initialTenantPassword }),
+        body: JSON.stringify(tenantForm),
       });
       if (isChangingTenantPassword) {
         await request(`/api/tenants/${editingTenantId}/password`, {
@@ -743,12 +823,8 @@ function App() {
       }
       setNotice(editingTenantId
         ? `${data.tenant.name} was updated${isChangingTenantPassword ? ' and its administrator password was changed' : ''}.`
-        : data.tenant.password_set
-          ? `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. The administrator password you set is active; share it securely.`
-          : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. Admin: ${data.tenant.admin_email}. One-time password: ${data.tenant.temporary_password}.`);
+        : `${data.tenant.tenant_name} is ready at ${getTenantPortalUrl(data.tenant.domain)}. A one-time password was emailed to ${data.tenant.admin_email}; it expires in 24 hours and must be changed at first sign-in.`);
       setTenantForm(emptyTenant);
-      setInitialTenantPassword('');
-      setInitialTenantPasswordConfirm('');
       setEditingTenantPassword('');
       setEditingTenantPasswordConfirm('');
       setEditingTenantId(null);
@@ -766,8 +842,6 @@ function App() {
     setPasswordTenantId(null);
     setTenantPassword('');
     setTenantPasswordConfirm('');
-    setInitialTenantPassword('');
-    setInitialTenantPasswordConfirm('');
     setEditingTenantPassword('');
     setEditingTenantPasswordConfirm('');
     setTenantForm({
@@ -1090,6 +1164,108 @@ function App() {
     setError('');
   };
 
+  const openProfileDialog = async () => {
+    if (profileBusy || profileLoading) return;
+    setProfileForm({ name: session?.name || '', email: session?.email || '', phone: session?.phone || '', employee_id: session?.employee_id || '', avatar_data_url: session?.avatar_data_url || '' });
+    setProfileCurrentPassword('');
+    setProfileNewPassword('');
+    setProfilePasswordConfirm('');
+    setProfilePasswordOpen(false);
+    setProfileNotice('');
+    setProfileError('');
+    setProfileDialogOpen(true);
+    setNotificationsOpen(false);
+    setProfileLoading(true);
+    try {
+      const result = await request('/api/auth/profile');
+      const updatedSession = { ...session, ...result.user };
+      localStorage.setItem('carestack-session', JSON.stringify(updatedSession));
+      setSession(updatedSession);
+      setProfileForm({ name: updatedSession.name || '', email: updatedSession.email || '', phone: updatedSession.phone || '', employee_id: updatedSession.employee_id || '', avatar_data_url: updatedSession.avatar_data_url || '' });
+    } catch (loadError) {
+      setProfileError(loadError.message || 'Your profile could not be loaded.');
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const handleProfilePhotoChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setProfileError('Choose a PNG, JPG, or WebP image.');
+      setProfileNotice('');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > 512 * 1024) {
+      setProfileError('Choose an image smaller than 500 KB.');
+      setProfileNotice('');
+      event.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setProfileForm((current) => ({ ...current, avatar_data_url: String(reader.result || '') }));
+      setProfileError('');
+      setProfileNotice('');
+    };
+    reader.onerror = () => { setProfileError('The selected image could not be opened.'); setProfileNotice(''); };
+    reader.readAsDataURL(file);
+  };
+
+  const saveOwnProfile = async (event) => {
+    event.preventDefault();
+    setProfileError('');
+    setProfileNotice('');
+    setProfileBusy(true);
+    try {
+      const result = await request('/api/auth/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: profileForm.name.trim(),
+          email: profileForm.email.trim().toLowerCase(),
+          phone: profileForm.phone.trim() || null,
+          avatar_data_url: profileForm.avatar_data_url || null,
+        }),
+      });
+      const updatedSession = { ...session, ...result.user };
+      localStorage.setItem('carestack-session', JSON.stringify(updatedSession));
+      setSession(updatedSession);
+      setProfileForm({ name: updatedSession.name, email: updatedSession.email, phone: updatedSession.phone || '', employee_id: updatedSession.employee_id || '', avatar_data_url: updatedSession.avatar_data_url || '' });
+      setProfileNotice(result.message || 'Profile updated successfully.');
+    } catch (saveError) {
+      setProfileError(saveError.message || 'Your profile could not be saved.');
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const changeOwnProfilePassword = async (event) => {
+    event.preventDefault();
+    setProfileError('');
+    setProfileNotice('');
+    if (profileNewPassword !== profilePasswordConfirm) {
+      setProfileError('The new passwords do not match.');
+      return;
+    }
+    setProfileBusy(true);
+    try {
+      const result = await request('/api/auth/password/change', {
+        method: 'POST',
+        body: JSON.stringify({ current_password: profileCurrentPassword, password: profileNewPassword }),
+      });
+      setProfileCurrentPassword('');
+      setProfileNewPassword('');
+      setProfilePasswordConfirm('');
+      setProfileNotice(result.message || 'Password updated successfully.');
+    } catch (passwordError) {
+      setProfileError(passwordError.message || 'Your password could not be updated.');
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
   const summary = useMemo(() => tenantData?.summary || {
     patients: 0,
     appointments: 0,
@@ -1372,16 +1548,43 @@ function App() {
       {loginOpen && <div className="login-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLoginOpen(false); }}>
         <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-heading">
           <button className="login-close" aria-label="Close sign in" onClick={() => setLoginOpen(false)}>×</button>
-          <p className="section-kicker">CARESTACK ACCESS</p><h2 id="login-heading">Welcome back.</h2><p className="login-subtitle">Choose your workspace to continue.</p>
-          <div className="login-role-switch" role="tablist" aria-label="Choose sign-in type"><button role="tab" aria-selected={loginRole === 'tenant'} className={loginRole === 'tenant' ? 'selected' : ''} onClick={() => openLogin('tenant')}>Clinic admin or staff</button><button role="tab" aria-selected={loginRole === 'super_admin'} className={loginRole === 'super_admin' ? 'selected' : ''} onClick={() => openLogin('super_admin')}>Platform admin</button></div>
-          <div className="login-clinic-label"><span>{loginRole === 'tenant' ? 'CLINIC WORKSPACE' : 'PLATFORM CONTROL'}</span><strong>{loginRole === 'tenant' ? tenantBrand.name : 'CareStack platform'}</strong>{loginRole === 'tenant' && <small>{tenantBrand.domain}</small>}</div>
-          <form onSubmit={handleLogin}>
-            <label htmlFor="site-login-email">Work email</label><input id="site-login-email" type="email" autoComplete="username" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
-            <label htmlFor="site-login-password">Password</label><input id="site-login-password" type="password" autoComplete="current-password" required value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} />
+          <p className="section-kicker">CARESTACK ACCESS</p>
+          <h2 id="login-heading">{loginMode === 'login' ? 'Welcome back.' : loginMode === 'forgot' ? 'Reset your password.' : loginMode === 'reset' ? 'Choose a new password.' : 'Secure your account.'}</h2>
+          <p className="login-subtitle">{loginMode === 'login' ? 'Choose your workspace to continue.' : loginMode === 'forgot' ? 'We’ll email a short reset code if this account exists.' : loginMode === 'reset' ? 'Enter the code sent to your clinic email.' : 'Your one-time password has been used. Set a new password to continue.'}</p>
+          {loginMode === 'login' && <>
+            <div className="login-role-switch" role="tablist" aria-label="Choose sign-in type"><button role="tab" aria-selected={loginRole === 'tenant'} className={loginRole === 'tenant' ? 'selected' : ''} onClick={() => openLogin('tenant')}>Clinic admin or staff</button><button role="tab" aria-selected={loginRole === 'super_admin'} className={loginRole === 'super_admin' ? 'selected' : ''} onClick={() => openLogin('super_admin')}>Platform admin</button></div>
+            <div className="login-clinic-label"><span>{loginRole === 'tenant' ? 'CLINIC WORKSPACE' : 'PLATFORM CONTROL'}</span><strong>{loginRole === 'tenant' ? tenantBrand.name : 'CareStack platform'}</strong>{loginRole === 'tenant' && <small>{tenantBrand.domain}</small>}</div>
+            <form onSubmit={handleLogin}>
+              <label htmlFor="site-login-email">Work email</label><input id="site-login-email" type="email" autoComplete="username" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
+              <label htmlFor="site-login-password">Password or one-time password</label><input id="site-login-password" type="password" autoComplete="current-password" required value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} />
+              {error && <div className="login-error" role="alert">{error}</div>}
+              {loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
+              <button className="button-dark login-submit" disabled={busy}>{busy ? 'Signing in…' : loginRole === 'tenant' ? 'Open clinic workspace' : 'Open platform console'} <span aria-hidden="true">→</span></button>
+            </form>
+            {loginRole === 'tenant' && <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); setLoginStatus(''); }}>Forgot password?</button>}
+            {import.meta.env.DEV && <p className="login-demo-note">Local demo: {loginRole === 'tenant' ? `admin@${tenantBrand.domain}.in` : 'superadmin@hospital.ai'} / admin123</p>}
+          </>}
+          {loginMode === 'forgot' && <form onSubmit={submitPasswordResetRequest}>
+            <label htmlFor="reset-email">Clinic account email</label><input id="reset-email" type="email" autoComplete="email" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
+            {error && <div className="login-error" role="alert">{error}</div>}{loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
+            <button className="button-dark login-submit" disabled={busy}>{busy ? 'Sending code…' : 'Email reset code'} <span aria-hidden="true">→</span></button>
+            <button type="button" className="login-text-button" onClick={() => { setLoginMode('login'); setError(''); setLoginStatus(''); }}>Back to sign in</button>
+          </form>}
+          {loginMode === 'reset' && <form onSubmit={submitPasswordReset}>
+            {loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
+            <label htmlFor="reset-code">6-digit reset code</label><input id="reset-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required value={resetCode} onChange={(event) => setResetCode(event.target.value.replace(/\D/g, '').slice(0, 6))} />
+            <label htmlFor="reset-new-password">New password</label><input id="reset-new-password" type="password" autoComplete="new-password" minLength="10" maxLength="72" required value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+            <label htmlFor="reset-confirm-password">Confirm new password</label><input id="reset-confirm-password" type="password" autoComplete="new-password" minLength="10" maxLength="72" required value={resetPasswordConfirm} onChange={(event) => setResetPasswordConfirm(event.target.value)} />
             {error && <div className="login-error" role="alert">{error}</div>}
-            <button className="button-dark login-submit" disabled={busy}>{busy ? 'Signing in…' : loginRole === 'tenant' ? 'Open clinic workspace' : 'Open platform console'} <span aria-hidden="true">→</span></button>
-          </form>
-          {import.meta.env.DEV && <p className="login-demo-note">Local demo: {loginRole === 'tenant' ? `admin@${tenantBrand.domain}.in` : 'superadmin@hospital.ai'} / admin123</p>}
+            <button className="button-dark login-submit" disabled={busy}>{busy ? 'Updating password…' : 'Reset password'} <span aria-hidden="true">→</span></button>
+            <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); }}>Request another code</button>
+          </form>}
+          {loginMode === 'initial-password' && <form onSubmit={submitFirstPassword}>
+            <label htmlFor="first-new-password">New password</label><input id="first-new-password" type="password" autoComplete="new-password" minLength="10" maxLength="72" required value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+            <label htmlFor="first-confirm-password">Confirm new password</label><input id="first-confirm-password" type="password" autoComplete="new-password" minLength="10" maxLength="72" required value={resetPasswordConfirm} onChange={(event) => setResetPasswordConfirm(event.target.value)} />
+            {loginStatus && <div className="login-success" role="status">{loginStatus}</div>}{error && <div className="login-error" role="alert">{error}</div>}
+            <button className="button-dark login-submit" disabled={busy}>{busy ? 'Securing account…' : 'Set password and continue'} <span aria-hidden="true">→</span></button>
+          </form>}
         </section>
       </div>}
     </div>
@@ -1400,30 +1603,33 @@ function App() {
                   <p className="text-muted mb-0">Tenant admin / super admin access · {tenantBrand.hostname}</p>
                 </div>
 
-                <form onSubmit={handleLogin}>
-                  <div className="mb-3">
-                    <label className="form-label">Email</label>
-                    <input
-                      type="email"
-                      className="form-control form-control-lg"
-                      value={loginForm.email}
-                      onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
-                    />
-                  </div>
-                  <div className="mb-3">
-                    <label className="form-label">Password</label>
-                    <input
-                      type="password"
-                      className="form-control form-control-lg"
-                      value={loginForm.password}
-                      onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                    />
-                  </div>
-
-                  {error && <div className="alert alert-danger">{error}</div>}
-
+                {loginMode === 'login' && <form onSubmit={handleLogin}>
+                  <div className="mb-3"><label className="form-label">Email</label><input type="email" className="form-control form-control-lg" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} /></div>
+                  <div className="mb-3"><label className="form-label">Password or one-time password</label><input type="password" className="form-control form-control-lg" required value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} /></div>
+                  {error && <div className="alert alert-danger">{error}</div>}{loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
                   <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-                </form>
+                  {loginRole === 'tenant' && <button type="button" className="login-text-button" onClick={() => { setLoginMode('forgot'); setError(''); setLoginStatus(''); }}>Forgot password?</button>}
+                </form>}
+                {loginMode === 'forgot' && <form onSubmit={submitPasswordResetRequest}>
+                  <div className="mb-3"><label className="form-label">Clinic account email</label><input type="email" className="form-control form-control-lg" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} /></div>
+                  {error && <div className="alert alert-danger">{error}</div>}{loginStatus && <div className="login-success" role="status">{loginStatus}</div>}
+                  <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Sending code…' : 'Email reset code'}</button><button type="button" className="login-text-button" onClick={() => setLoginMode('login')}>Back to sign in</button>
+                </form>}
+                {loginMode === 'reset' && <form onSubmit={submitPasswordReset}>
+                  {loginStatus && <div className="login-success mb-3" role="status">{loginStatus}</div>}
+                  <div className="mb-3"><label className="form-label">6-digit reset code</label><input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required className="form-control form-control-lg" value={resetCode} onChange={(event) => setResetCode(event.target.value.replace(/\D/g, '').slice(0, 6))} /></div>
+                  <div className="mb-3"><label className="form-label">New password</label><input type="password" autoComplete="new-password" minLength="10" maxLength="72" required className="form-control form-control-lg" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></div>
+                  <div className="mb-3"><label className="form-label">Confirm new password</label><input type="password" autoComplete="new-password" minLength="10" maxLength="72" required className="form-control form-control-lg" value={resetPasswordConfirm} onChange={(event) => setResetPasswordConfirm(event.target.value)} /></div>
+                  {error && <div className="alert alert-danger">{error}</div>}
+                  <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Updating password…' : 'Reset password'}</button><button type="button" className="login-text-button" onClick={() => setLoginMode('forgot')}>Request another code</button>
+                </form>}
+                {loginMode === 'initial-password' && <form onSubmit={submitFirstPassword}>
+                  <p className="text-muted">Your one-time password was accepted. Set a new password to continue.</p>
+                  <div className="mb-3"><label className="form-label">New password</label><input type="password" autoComplete="new-password" minLength="10" maxLength="72" required className="form-control form-control-lg" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></div>
+                  <div className="mb-3"><label className="form-label">Confirm new password</label><input type="password" autoComplete="new-password" minLength="10" maxLength="72" required className="form-control form-control-lg" value={resetPasswordConfirm} onChange={(event) => setResetPasswordConfirm(event.target.value)} /></div>
+                  {error && <div className="alert alert-danger">{error}</div>}
+                  <button type="submit" className="btn btn-primary btn-lg w-100" disabled={busy}>{busy ? 'Securing account…' : 'Set password and continue'}</button>
+                </form>}
 
                 {import.meta.env.DEV && <div className="mt-4 text-muted small bg-light rounded-3 p-3">
                   Tenant demo: admin@skycare.in / admin123<br />Super admin: superadmin@hospital.ai / admin123
@@ -1514,7 +1720,16 @@ function App() {
                 <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''} aria-hidden="true">↻</span><span className="workspace-refresh-label">{refreshing ? 'Updating' : 'Refresh'}</span></button>
                 {!superAdmin && clinicAdmin && <button className="btn btn-primary workspace-new-booking" onClick={() => { setActiveView('appointments'); setBookingFormOpen(true); window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>＋ <span>New appointment</span></button>}
               {superAdmin && activeView === 'tenants' && <button className="btn btn-primary" onClick={() => { setTenantManagementFormOpen(true); document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>＋ Add clinic</button>}
-                <div className="workspace-user-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : session.role === 'tenant_admin' ? 'Clinic admin' : 'Receptionist')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
+                <div className="workspace-user-actions">
+                  {['tenant_admin', 'super_admin'].includes(session.role) ? <button type="button" className="workspace-user-profile is-editable" onClick={openProfileDialog} aria-label="Open profile settings" title="Profile settings">
+                    {session.avatar_data_url ? <img className="profile-avatar profile-avatar-image" src={session.avatar_data_url} alt="" /> : <span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span>}
+                    <span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : 'Clinic admin')}</strong><small>{session.email}</small></span>
+                  </button> : <div className="workspace-user-profile">
+                    <span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span>
+                    <span className="profile-copy"><strong>{session.name || 'Receptionist'}</strong><small>{session.email}</small></span>
+                  </div>}
+                  <button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out"><span aria-hidden="true">↗</span><span>Logout</span></button>
+                </div>
               </div>
             </header>
 
@@ -1634,7 +1849,7 @@ function App() {
                   </div>}
                   <div id="tenant-management-form">
                   <button type="button" className={`workspace-section-toggle ${tenantManagementFormOpen ? 'is-open' : ''}`} aria-expanded={tenantManagementFormOpen} aria-controls="tenant-management-fields" onClick={() => setTenantManagementFormOpen((open) => !open)}>
-                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{editingTenantId ? 'Edit tenant' : 'Onboard a clinic'}</span><span className="workspace-section-toggle-description">{editingTenantId ? 'Update clinic identity, plan, billing cycle, or subscription state.' : 'Create its tenant identity and first administrator.'}</span></span>
+                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{editingTenantId ? 'Edit tenant' : 'Onboard a clinic'}</span><span className="workspace-section-toggle-description">{editingTenantId ? 'Update clinic identity, plan, billing cycle, or subscription state.' : 'Create its tenant identity; the administrator receives a one-time password by email.'}</span></span>
                     <span className="workspace-section-toggle-action">{tenantManagementFormOpen ? 'Collapse −' : 'Expand +'}</span>
                   </button>
                   <div id="tenant-management-fields" className="mt-3" hidden={!tenantManagementFormOpen}>
@@ -1645,14 +1860,14 @@ function App() {
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-name">Admin name</label><input id="admin-name" className="form-control" required value={tenantForm.admin_name} onChange={(event) => setTenantForm({ ...tenantForm, admin_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>
-                      {!editingTenantId && <><div className="col-md-6"><label className="form-label" htmlFor="new-tenant-password">Administrator password</label><input id="new-tenant-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={initialTenantPassword} onChange={(event) => setInitialTenantPassword(event.target.value)} /><small className="text-muted">10–72 characters; password length is limited by bcrypt.</small></div><div className="col-md-6"><label className="form-label" htmlFor="confirm-new-tenant-password">Confirm administrator password</label><input id="confirm-new-tenant-password" className="form-control" type="password" autoComplete="new-password" required minLength="10" maxLength="72" value={initialTenantPasswordConfirm} onChange={(event) => setInitialTenantPasswordConfirm(event.target.value)} /></div></>}
+                      {!editingTenantId && <div className="col-12"><div className="alert alert-info mb-0">CareStack will generate a one-time password and email it to the administrator. They must choose a new password the first time they sign in.</div></div>}
                       {editingTenantId && <div className="col-12 border-top pt-3 mt-2"><h5 className="mb-1">Tenant administrator password</h5><p className="text-muted">Enter a new password here to change it. Leave both fields blank to keep the current password.</p><div className="row g-3"><div className="col-md-6"><label className="form-label" htmlFor="edit-tenant-password">New password</label><input id="edit-tenant-password" className="form-control" type="password" autoComplete="new-password" minLength="10" maxLength="72" value={editingTenantPassword} onChange={(event) => setEditingTenantPassword(event.target.value)} /></div><div className="col-md-6"><label className="form-label" htmlFor="confirm-edit-tenant-password">Confirm new password</label><input id="confirm-edit-tenant-password" className="form-control" type="password" autoComplete="new-password" minLength="10" maxLength="72" value={editingTenantPasswordConfirm} onChange={(event) => setEditingTenantPasswordConfirm(event.target.value)} /></div></div></div>}
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-plan">Plan</label><select id="tenant-plan" className="form-select" value={tenantForm.plan} onChange={(event) => setTenantForm({ ...tenantForm, plan: event.target.value })}>{(plans.length ? plans : [{ id: 'starter', name: 'Starter' }, { id: 'growth', name: 'Growth' }, { id: 'enterprise', name: 'Enterprise' }]).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-cycle">Billing cycle</label><select id="tenant-cycle" className="form-select" value={tenantForm.billing_cycle} onChange={(event) => setTenantForm({ ...tenantForm, billing_cycle: event.target.value })}><option value="monthly">Monthly</option><option value="annual">Annual</option></select></div>
                       <div className="col-md-3"><label className="form-label" htmlFor="tenant-region">Region</label><input id="tenant-region" className="form-control" required value={tenantForm.region} onChange={(event) => setTenantForm({ ...tenantForm, region: event.target.value })} /></div>
                       {editingTenantId && <div className="col-md-3"><label className="form-label" htmlFor="tenant-status">Subscription status</label><select id="tenant-status" className="form-select" value={tenantForm.subscription_status} onChange={(event) => setTenantForm({ ...tenantForm, subscription_status: event.target.value })}><option value="active">Active</option><option value="paused">Paused</option></select></div>}
                     </div>
-                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? (editingTenantPassword || editingTenantPasswordConfirm ? 'Save tenant & password' : 'Save tenant') : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); setEditingTenantPassword(''); setEditingTenantPasswordConfirm(''); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setTenantForm(emptyTenant); setInitialTenantPassword(''); setInitialTenantPasswordConfirm(''); }}>Clear form</button>}</div>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? (editingTenantPassword || editingTenantPasswordConfirm ? 'Save tenant & password' : 'Save tenant') : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); setEditingTenantPassword(''); setEditingTenantPasswordConfirm(''); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => setTenantForm(emptyTenant)}>Clear form</button>}</div>
                   </form>
                   </div>
                   </div>
@@ -1831,6 +2046,44 @@ function App() {
               </div>
             </main>
           </div>
+          {profileDialogOpen && <div className="workspace-profile-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileBusy && !profileLoading) setProfileDialogOpen(false); }} onKeyDown={(event) => { if (event.key === 'Escape' && !profileBusy && !profileLoading) setProfileDialogOpen(false); }}>
+            <section className="workspace-profile-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-profile-title">
+              <div className="workspace-profile-heading">
+                <div><p className="workspace-confirm-eyebrow">ACCOUNT SETTINGS</p><h2 id="workspace-profile-title">Your profile</h2><p>Update the details shown in your workspace header.</p></div>
+                <button type="button" className="workspace-profile-close" onClick={() => setProfileDialogOpen(false)} disabled={profileBusy || profileLoading} aria-label="Close profile settings">×</button>
+              </div>
+              <div className="workspace-profile-photo-row">
+                {profileForm.avatar_data_url ? <img className="workspace-profile-photo" src={profileForm.avatar_data_url} alt="Profile preview" /> : <span className="workspace-profile-photo workspace-profile-photo-placeholder">{String(profileForm.name || profileForm.email || 'U').charAt(0).toUpperCase()}</span>}
+                <div className="workspace-profile-photo-actions"><strong>Profile photo</strong><small>PNG, JPG, or WebP · up to 500 KB</small><div><label className="workspace-profile-upload">Choose image<input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleProfilePhotoChange} /></label>{profileForm.avatar_data_url && <button type="button" className="workspace-profile-remove" onClick={() => setProfileForm((current) => ({ ...current, avatar_data_url: '' }))}>Remove</button>}</div></div>
+              </div>
+              <form className="workspace-profile-form" onSubmit={saveOwnProfile}>
+                <div className="workspace-profile-fields">
+                  <label>Name<input className="form-control" value={profileForm.name} onChange={(event) => setProfileForm((current) => ({ ...current, name: event.target.value }))} required minLength={2} maxLength={100} autoComplete="name" /></label>
+                  <label>Email address<input className="form-control" type="email" value={profileForm.email} onChange={(event) => setProfileForm((current) => ({ ...current, email: event.target.value }))} required maxLength={254} autoComplete="email" /></label>
+                  <label>Phone number<input className="form-control" type="tel" value={profileForm.phone} onChange={(event) => setProfileForm((current) => ({ ...current, phone: event.target.value }))} maxLength={20} pattern="\+?[0-9\s()-]{7,20}" autoComplete="tel" placeholder="+91 98765 43210" /></label>
+                  <label>Employee ID<input className="form-control workspace-profile-readonly" value={profileForm.employee_id} readOnly aria-readonly="true" /><small>Assigned automatically and cannot be edited.</small></label>
+                </div>
+                <div className="workspace-profile-actions"><button type="submit" className="workspace-confirm-accept" disabled={profileBusy || profileLoading}>{profileLoading ? 'Loading…' : profileBusy ? 'Saving…' : 'Save profile'}</button></div>
+              </form>
+              <div className="workspace-profile-divider" />
+              <div className="workspace-profile-form">
+                <button type="button" className={`workspace-section-toggle ${profilePasswordOpen ? 'is-open' : ''}`} aria-expanded={profilePasswordOpen} aria-controls="workspace-profile-password-fields" onClick={() => setProfilePasswordOpen((open) => !open)}>
+                  <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">Change password</span><span className="workspace-section-toggle-description">Update the password for your account.</span></span>
+                  <span className="workspace-section-toggle-action">{profilePasswordOpen ? 'Collapse −' : 'Expand +'}</span>
+                </button>
+                {profilePasswordOpen && <form id="workspace-profile-password-fields" className="workspace-profile-form" onSubmit={changeOwnProfilePassword}>
+                  <div className="workspace-profile-section-heading"><p>Use your current password to set a new one.</p></div>
+                  <div className="workspace-profile-fields workspace-profile-password-fields">
+                    <label>Current password<input className="form-control" type="password" value={profileCurrentPassword} onChange={(event) => setProfileCurrentPassword(event.target.value)} required autoComplete="current-password" /></label>
+                    <label>New password<input className="form-control" type="password" value={profileNewPassword} onChange={(event) => setProfileNewPassword(event.target.value)} required minLength={10} maxLength={72} autoComplete="new-password" /></label>
+                    <label>Confirm new password<input className="form-control" type="password" value={profilePasswordConfirm} onChange={(event) => setProfilePasswordConfirm(event.target.value)} required minLength={10} maxLength={72} autoComplete="new-password" /></label>
+                  </div>
+                  <div className="workspace-profile-actions"><button type="submit" className="workspace-confirm-cancel" disabled={profileBusy || profileLoading || !profileCurrentPassword || !profileNewPassword}>{profileLoading ? 'Loading…' : profileBusy ? 'Updating…' : 'Update password'}</button></div>
+                </form>}
+              </div>
+              {(profileError || profileNotice) && <div className="workspace-profile-feedback" aria-live="polite">{profileError && <p className="workspace-profile-message error" role="alert">{profileError}</p>}{profileNotice && <p className="workspace-profile-message success" role="status">{profileNotice}</p>}</div>}
+            </section>
+          </div>}
           {confirmationDialog && <div className="workspace-confirm-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) resolveConfirmation(false); }} onKeyDown={(event) => { if (event.key === 'Escape') resolveConfirmation(false); }}>
             <section className={`workspace-confirm-dialog ${confirmationDialog.tone === 'danger' ? 'danger' : ''}`} role="alertdialog" aria-modal="true" aria-labelledby="workspace-confirm-title" aria-describedby="workspace-confirm-message">
               <span className={`workspace-confirm-mark ${confirmationDialog.tone === 'danger' ? 'danger' : ''}`} aria-hidden="true">{confirmationDialog.tone === 'danger' ? '!' : '?'}</span>

@@ -33,6 +33,71 @@ __decorate([
     (0, class_validator_1.MinLength)(1),
     __metadata("design:type", String)
 ], LoginDto.prototype, "password", void 0);
+class PasswordResetRequestDto {
+}
+__decorate([
+    (0, class_validator_1.IsEmail)(),
+    __metadata("design:type", String)
+], PasswordResetRequestDto.prototype, "email", void 0);
+class PasswordResetDto {
+}
+__decorate([
+    (0, class_validator_1.IsEmail)(),
+    __metadata("design:type", String)
+], PasswordResetDto.prototype, "email", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.Matches)(/^\d{6}$/),
+    __metadata("design:type", String)
+], PasswordResetDto.prototype, "code", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(10),
+    (0, class_validator_1.IsByteLength)(10, 72),
+    __metadata("design:type", String)
+], PasswordResetDto.prototype, "password", void 0);
+class PasswordChangeDto {
+}
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(1),
+    (0, class_validator_1.MaxLength)(128),
+    __metadata("design:type", String)
+], PasswordChangeDto.prototype, "current_password", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(10),
+    (0, class_validator_1.IsByteLength)(10, 72),
+    __metadata("design:type", String)
+], PasswordChangeDto.prototype, "password", void 0);
+class OwnProfileDto {
+}
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(100),
+    __metadata("design:type", String)
+], OwnProfileDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsEmail)(),
+    (0, class_validator_1.MaxLength)(254),
+    __metadata("design:type", String)
+], OwnProfileDto.prototype, "email", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(20),
+    (0, class_validator_1.Matches)(/^\+?[\d\s()-]{7,20}$/),
+    __metadata("design:type", String)
+], OwnProfileDto.prototype, "phone", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(700000),
+    (0, class_validator_1.Matches)(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
+    __metadata("design:type", String)
+], OwnProfileDto.prototype, "avatar_data_url", void 0);
 class ClinicInterestDto {
 }
 __decorate([
@@ -483,7 +548,7 @@ let AppController = AppController_1 = class AppController {
             role: user.role,
             tenant_id: user.tenant_id,
             email: user.email,
-            permissions: user.permissions || [],
+            permissions: ('permissions' in user && user.permissions) || [],
         });
         return {
             user,
@@ -492,6 +557,44 @@ let AppController = AppController_1 = class AppController {
             expires_in: 1800,
             message: 'Login successful',
         };
+    }
+    async requestPasswordReset(body) {
+        try {
+            return await this.appService.requestPasswordReset(body.email);
+        }
+        catch {
+            throw new common_1.ServiceUnavailableException('Password reset email could not be sent. Please try again later.');
+        }
+    }
+    async resetPassword(body) {
+        const updated = await this.appService.resetPassword(body.email, body.code, body.password);
+        if (!updated)
+            throw new common_1.BadRequestException('The reset code is invalid or expired. Request a new code and try again.');
+        return { updated: true, message: 'Password updated. You can now sign in.' };
+    }
+    async changeOwnPassword(request, body) {
+        const updated = await this.appService.changeOwnPassword(request.user.tenant_id, request.user.sub, body.current_password, body.password);
+        if (updated === 'not_found')
+            throw new common_1.UnauthorizedException('This account is no longer active.');
+        if (updated === 'current_password_invalid')
+            throw new common_1.BadRequestException('The current password is incorrect.');
+        return { updated: true, message: 'Password updated successfully.' };
+    }
+    getOwnProfile(request) {
+        const user = this.appService.getOwnProfile(request.user.tenant_id, request.user.sub);
+        if (!user)
+            throw new common_1.UnauthorizedException('This account is no longer active.');
+        return { user };
+    }
+    async updateOwnProfile(request, body) {
+        const updated = await this.appService.updateOwnProfile(request.user.tenant_id, request.user.sub, body);
+        if (updated === 'invalid')
+            throw new common_1.BadRequestException('Name and email are required.');
+        if (updated === 'email_taken')
+            throw new common_1.ConflictException('That email address is already being used by another account.');
+        if (updated === 'not_found')
+            throw new common_1.UnauthorizedException('This account is no longer active.');
+        return { user: updated, message: 'Profile updated successfully.' };
     }
     resolveTenant(domain) {
         const tenant = this.appService.getTenantByDomain(domain);
@@ -543,8 +646,10 @@ let AppController = AppController_1 = class AppController {
     getSuperAdminDashboard() {
         return this.appService.getSuperAdminDashboard();
     }
-    onboardTenant(body) {
-        const tenant = this.appService.createTenant(body);
+    async onboardTenant(body) {
+        const tenant = await this.appService.createTenant(body).catch(() => {
+            throw new common_1.ServiceUnavailableException('Clinic account could not be created because the administrator email could not be delivered. Check the API email configuration and try again.');
+        });
         if (!tenant)
             throw new common_1.ConflictException('Tenant domain or administrator email is already in use');
         return { tenant, message: 'Tenant onboarded successfully' };
@@ -879,6 +984,49 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], AppController.prototype, "login", null);
 __decorate([
+    (0, common_1.Post)('api/auth/password-reset/request'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [PasswordResetRequestDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "requestPasswordReset", null);
+__decorate([
+    (0, common_1.Post)('api/auth/password-reset/confirm'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [PasswordResetDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "resetPassword", null);
+__decorate([
+    (0, common_1.Post)('api/auth/password/change'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin', 'receptionist', 'super_admin'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, PasswordChangeDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "changeOwnPassword", null);
+__decorate([
+    (0, common_1.Get)('api/auth/profile'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin', 'super_admin'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "getOwnProfile", null);
+__decorate([
+    (0, common_1.Patch)('api/auth/profile'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin', 'super_admin'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, OwnProfileDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "updateOwnProfile", null);
+__decorate([
     (0, common_1.Get)('api/tenant/resolve/:domain'),
     __param(0, (0, common_1.Param)('domain')),
     __metadata("design:type", Function),
@@ -965,7 +1113,7 @@ __decorate([
     __param(0, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [TenantOnboardDto]),
-    __metadata("design:returntype", void 0)
+    __metadata("design:returntype", Promise)
 ], AppController.prototype, "onboardTenant", null);
 __decorate([
     (0, common_1.Put)('api/tenants/:tenantId'),

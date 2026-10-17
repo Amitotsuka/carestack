@@ -4,6 +4,24 @@ declare class LoginDto {
     email: string;
     password: string;
 }
+declare class PasswordResetRequestDto {
+    email: string;
+}
+declare class PasswordResetDto {
+    email: string;
+    code: string;
+    password: string;
+}
+declare class PasswordChangeDto {
+    current_password?: string;
+    password: string;
+}
+declare class OwnProfileDto {
+    name: string;
+    email: string;
+    phone?: string | null;
+    avatar_data_url?: string | null;
+}
 declare class ClinicInterestDto {
     clinic_name: string;
     contact_name: string;
@@ -105,20 +123,91 @@ export declare class AppController {
             name: string;
             tenant_id: any;
             email: string;
-            tenant_domain?: undefined;
-            permissions?: undefined;
+            avatar_data_url: string;
+            phone: string;
+            employee_id: string;
         } | {
+            permissions: string[];
+            must_change_password: boolean;
+            phone?: string;
+            employee_id?: string;
             user_id: string;
             role: string;
             name: string;
             tenant_id: string;
             tenant_domain: string;
             email: string;
-            permissions: string[];
+            avatar_data_url: string;
         };
         access_token: string;
         token_type: string;
         expires_in: number;
+        message: string;
+    }>;
+    requestPasswordReset(body: PasswordResetRequestDto): Promise<{
+        message: string;
+    }>;
+    resetPassword(body: PasswordResetDto): Promise<{
+        updated: boolean;
+        message: string;
+    }>;
+    changeOwnPassword(request: any, body: PasswordChangeDto): Promise<{
+        updated: boolean;
+        message: string;
+    }>;
+    getOwnProfile(request: any): {
+        user: {
+            user_id: string;
+            role: string;
+            tenant_id: any;
+            name: string;
+            email: string;
+            avatar_data_url: string;
+            phone: string;
+            employee_id: string;
+            tenant_domain?: undefined;
+            permissions?: undefined;
+            must_change_password?: undefined;
+        } | {
+            user_id: string;
+            role: string;
+            tenant_id: string;
+            tenant_domain: string;
+            name: string;
+            email: string;
+            avatar_data_url: string;
+            phone: string;
+            employee_id: string;
+            permissions: string[];
+            must_change_password: boolean;
+        };
+    };
+    updateOwnProfile(request: any, body: OwnProfileDto): Promise<{
+        user: {
+            user_id: string;
+            role: string;
+            tenant_id: any;
+            name: string;
+            email: string;
+            avatar_data_url: string;
+            phone: string;
+            employee_id: string;
+            tenant_domain?: undefined;
+            permissions?: undefined;
+            must_change_password?: undefined;
+        } | {
+            user_id: string;
+            role: string;
+            tenant_id: string;
+            tenant_domain: string;
+            name: string;
+            email: string;
+            avatar_data_url: string;
+            phone: string;
+            employee_id: string;
+            permissions: string[];
+            must_change_password: boolean;
+        };
         message: string;
     }>;
     resolveTenant(domain: string): {
@@ -263,20 +352,19 @@ export declare class AppController {
             count: number;
         }[];
     };
-    onboardTenant(body: TenantOnboardDto): {
+    onboardTenant(body: TenantOnboardDto): Promise<{
         tenant: {
-            temporary_password?: any;
             tenant_id: string;
             tenant_name: string;
             domain: string;
             admin_email: string;
-            password_set: boolean;
+            email_sent: boolean;
             plan: string;
             subscription_status: "active" | "paused";
             billing_cycle: "monthly" | "annual";
         };
         message: string;
-    };
+    }>;
     updateTenant(tenantId: string, body: TenantUpdateDto): {
         tenant: {
             id: string;

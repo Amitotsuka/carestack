@@ -16,6 +16,40 @@ class LoginDto {
   password: string;
 }
 
+class PasswordResetRequestDto {
+  @IsEmail()
+  email: string;
+}
+
+class PasswordResetDto {
+  @IsEmail()
+  email: string;
+  @IsString() @Matches(/^\d{6}$/)
+  code: string;
+  @IsString() @MinLength(10) @IsByteLength(10, 72)
+  password: string;
+}
+
+class PasswordChangeDto {
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(128)
+  current_password?: string;
+  @IsString() @MinLength(10) @IsByteLength(10, 72)
+  password: string;
+}
+
+class OwnProfileDto {
+  @IsString() @MinLength(2) @MaxLength(100)
+  name: string;
+  @IsEmail() @MaxLength(254)
+  email: string;
+  @IsOptional() @IsString() @MaxLength(20)
+  @Matches(/^\+?[\d\s()-]{7,20}$/)
+  phone?: string | null;
+  @IsOptional() @IsString() @MaxLength(700000)
+  @Matches(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/)
+  avatar_data_url?: string | null;
+}
+
 class ClinicInterestDto {
   @IsString() @MinLength(2)
   clinic_name: string;
@@ -288,7 +322,7 @@ export class AppController {
       role: user.role,
       tenant_id: user.tenant_id,
       email: user.email,
-      permissions: user.permissions || [],
+      permissions: ('permissions' in user && user.permissions) || [],
     });
 
     return {
@@ -298,6 +332,52 @@ export class AppController {
       expires_in: 1800,
       message: 'Login successful',
     };
+  }
+
+  @Post('api/auth/password-reset/request')
+  async requestPasswordReset(@Body() body: PasswordResetRequestDto) {
+    try {
+      return await this.appService.requestPasswordReset(body.email);
+    } catch {
+      throw new ServiceUnavailableException('Password reset email could not be sent. Please try again later.');
+    }
+  }
+
+  @Post('api/auth/password-reset/confirm')
+  async resetPassword(@Body() body: PasswordResetDto) {
+    const updated = await this.appService.resetPassword(body.email, body.code, body.password);
+    if (!updated) throw new BadRequestException('The reset code is invalid or expired. Request a new code and try again.');
+    return { updated: true, message: 'Password updated. You can now sign in.' };
+  }
+
+  @Post('api/auth/password/change')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin', 'receptionist', 'super_admin')
+  async changeOwnPassword(@Req() request: any, @Body() body: PasswordChangeDto) {
+    const updated = await this.appService.changeOwnPassword(request.user.tenant_id, request.user.sub, body.current_password, body.password);
+    if (updated === 'not_found') throw new UnauthorizedException('This account is no longer active.');
+    if (updated === 'current_password_invalid') throw new BadRequestException('The current password is incorrect.');
+    return { updated: true, message: 'Password updated successfully.' };
+  }
+
+  @Get('api/auth/profile')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin', 'super_admin')
+  getOwnProfile(@Req() request: any) {
+    const user = this.appService.getOwnProfile(request.user.tenant_id, request.user.sub);
+    if (!user) throw new UnauthorizedException('This account is no longer active.');
+    return { user };
+  }
+
+  @Patch('api/auth/profile')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin', 'super_admin')
+  async updateOwnProfile(@Req() request: any, @Body() body: OwnProfileDto) {
+    const updated = await this.appService.updateOwnProfile(request.user.tenant_id, request.user.sub, body);
+    if (updated === 'invalid') throw new BadRequestException('Name and email are required.');
+    if (updated === 'email_taken') throw new ConflictException('That email address is already being used by another account.');
+    if (updated === 'not_found') throw new UnauthorizedException('This account is no longer active.');
+    return { user: updated, message: 'Profile updated successfully.' };
   }
 
   @Get('api/tenant/resolve/:domain')
@@ -381,8 +461,10 @@ export class AppController {
   @Post('api/tenants/onboard')
   @UseGuards(AccessGuard)
   @Roles('super_admin')
-  onboardTenant(@Body() body: TenantOnboardDto) {
-    const tenant = this.appService.createTenant(body);
+  async onboardTenant(@Body() body: TenantOnboardDto) {
+    const tenant = await this.appService.createTenant(body).catch(() => {
+      throw new ServiceUnavailableException('Clinic account could not be created because the administrator email could not be delivered. Check the API email configuration and try again.');
+    });
     if (!tenant) throw new ConflictException('Tenant domain or administrator email is already in use');
     return { tenant, message: 'Tenant onboarded successfully' };
   }
