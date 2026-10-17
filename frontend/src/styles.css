@@ -1261,8 +1261,8 @@ button, input {
 }
 
 .sidebar-clinic-card > span:nth-child(2), .profile-copy { min-width: 0; }
-.sidebar-clinic-card strong, .sidebar-clinic-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-clinic-card strong { color: #26384e; font-size: 0.76rem; }
+.sidebar-clinic-card strong, .sidebar-clinic-card small { display: block; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-clinic-card strong { display: -webkit-box; color: #26384e; font-size: 0.76rem; line-height: 1.25; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .sidebar-clinic-card small { margin-top: 3px; color: #8491a2; font-size: 0.66rem; }
 .sidebar-clinic-card i { color: #8795a7; font-style: normal; }
 .clinic-avatar { display: grid; width: 35px; height: 35px; place-items: center; border-radius: 11px; background: #e8efff; color: #3c5fa6; font-weight: 800; }

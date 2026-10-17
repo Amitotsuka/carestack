@@ -1310,14 +1310,16 @@ function App() {
     const pageTitle = superAdmin
       ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic requests' : 'Tenant management'
       : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'doctors' ? 'Doctor directory' : activeView === 'patients' ? 'Patient directory' : 'Appointments';
+    const workspacePlan = String(tenantData?.plan || '').replace(/\b\w/g, (char) => char.toUpperCase());
+    const workspaceRegion = String(tenantData?.region || '').trim();
     const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
 
     return (
       <div className={`page-shell dashboard-shell ${superAdmin ? 'admin-workspace' : 'clinic-workspace'}`}>
         <div className="workspace-layout">
           <aside className="workspace-sidebar">
-            <a className="workspace-brand" href="#workspace-home" aria-label="CareStack workspace home"><span className="workspace-brand-mark">C</span><span>carestack<small>CLINIC WORKSPACE</small></span></a>
-            {!superAdmin && <div className="sidebar-clinic-card"><span className="clinic-avatar">{tenantBrand.shortName.charAt(0)}</span><span><strong>{displayedTenant}</strong><small>{tenantData?.plan || 'Clinic'} workspace</small></span><i aria-hidden="true">⌄</i></div>}
+            <a className="workspace-brand" href="#workspace-home" aria-label={`${superAdmin ? 'CareStack' : tenantBrand.shortName} workspace home`}><span className="workspace-brand-mark">{superAdmin ? 'C' : tenantBrand.shortName.charAt(0).toUpperCase()}</span><span>{superAdmin ? 'CareStack' : tenantBrand.shortName}<small>{superAdmin ? 'PLATFORM WORKSPACE' : 'CLINIC WORKSPACE'}</small></span></a>
+            {!superAdmin && <div className="sidebar-clinic-card"><span className="clinic-avatar">{tenantBrand.shortName.charAt(0)}</span><span><strong title={displayedTenant}>{displayedTenant}</strong><small>{workspacePlan ? `${workspacePlan} plan${workspaceRegion ? ` · ${workspaceRegion}` : ''}` : `${workspaceRegion || 'Clinic'} workspace`}</small></span><i aria-hidden="true">⌄</i></div>}
             <p className="sidebar-section-label">WORKSPACE</p>
             <nav className="workspace-nav" aria-label="Workspace navigation">
               {workspaceNavigation.map(([view, label, icon]) => (
