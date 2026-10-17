@@ -1312,6 +1312,28 @@ button, input {
 .workspace-refresh:disabled { cursor: wait; opacity: .68; }
 .workspace-refresh > span:first-child { font-size: 1rem; line-height: 1; }
 .workspace-refresh-label { font-size: .74rem; }
+.workspace-section-toggle { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 13px; border: 1px solid #a9d2ec; border-radius: 11px; background: #eff8ff; color: #24658f; box-shadow: 0 2px 5px rgba(35, 86, 122, .07); cursor: pointer; font: inherit; text-align: left; transition: color 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
+.workspace-section-toggle:hover, .workspace-section-toggle.is-open { border-color: #72b4de; background: #dff1ff; color: #145a87; box-shadow: 0 3px 9px rgba(47, 105, 145, .13); }
+.workspace-section-toggle:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(63, 153, 205, .2); }
+.workspace-section-toggle-copy { display: grid; min-width: 0; gap: 3px; }
+.workspace-section-toggle-title { color: inherit; font-size: .91rem; font-weight: 700; line-height: 1.25; }
+.workspace-section-toggle-description { color: #617d8e; font-size: .72rem; font-weight: 450; line-height: 1.35; }
+.workspace-section-toggle-action { flex: 0 0 auto; color: inherit; font-size: .72rem; font-weight: 700; white-space: nowrap; }
+.workspace-confirm-overlay { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(25, 45, 60, .48); backdrop-filter: blur(4px); animation: fade-in 150ms ease both; }
+.workspace-confirm-dialog { width: min(100%, 450px); padding: 27px; border: 1px solid #cfe2ef; border-radius: 18px; background: #fff; color: #344c5d; box-shadow: 0 24px 70px rgba(27, 55, 76, .24); animation: dialog-arrive 180ms ease both; }
+.workspace-confirm-mark { display: grid; width: 38px; height: 38px; margin-bottom: 16px; place-items: center; border: 1px solid #c7e2f2; border-radius: 12px; background: #eff8ff; color: #24658f; font-size: 1.05rem; font-weight: 800; }
+.workspace-confirm-mark.danger { border-color: #f3d0d0; background: #fff1f1; color: #a83d43; }
+.workspace-confirm-eyebrow { margin: 0 0 6px; color: #4b83a5; font-size: .62rem; font-weight: 800; letter-spacing: .09em; }
+.workspace-confirm-dialog h2 { margin: 0; color: #243e50; font-size: 1.25rem; font-weight: 750; letter-spacing: -.025em; }
+.workspace-confirm-dialog > p:last-of-type { margin: 9px 0 0; color: #71818d; font-size: .82rem; line-height: 1.55; }
+.workspace-confirm-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 23px; }
+.workspace-confirm-actions button { min-height: 39px; padding: 8px 13px; border-radius: 10px; font-size: .76rem; font-weight: 700; }
+.workspace-confirm-cancel { border: 1px solid #d7e2e9; background: #fff; color: #536a79; }
+.workspace-confirm-cancel:hover { border-color: #a9d2ec; background: #f4faff; color: #24658f; }
+.workspace-confirm-accept { border: 1px solid #1875ad; background: #2589c5; color: #fff; box-shadow: 0 3px 8px rgba(37, 137, 197, .18); }
+.workspace-confirm-accept:hover { border-color: #126697; background: #1978b3; }
+.workspace-confirm-accept.danger { border-color: #a83d43; background: #bd4a50; box-shadow: 0 3px 8px rgba(189, 74, 80, .17); }
+.workspace-confirm-accept.danger:hover { border-color: #8d3036; background: #a83d43; }
 .workspace-icon-button { position: relative; width: 39px; padding: 0; }
 .workspace-icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .workspace-notification-wrap { position: relative; }

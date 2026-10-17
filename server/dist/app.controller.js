@@ -164,6 +164,59 @@ __decorate([
     (0, class_validator_1.IsByteLength)(10, 72),
     __metadata("design:type", String)
 ], TenantPasswordDto.prototype, "password", void 0);
+const STAFF_PERMISSION_OPTIONS = ['overview:view', 'agents:view', 'doctors:view', 'doctors:manage', 'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'reports:view'];
+class StaffCreateDto {
+}
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], StaffCreateDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsEmail)(),
+    __metadata("design:type", String)
+], StaffCreateDto.prototype, "email", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(10),
+    (0, class_validator_1.IsByteLength)(10, 72),
+    __metadata("design:type", String)
+], StaffCreateDto.prototype, "password", void 0);
+__decorate([
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(STAFF_PERMISSION_OPTIONS.length),
+    (0, class_validator_1.IsIn)(STAFF_PERMISSION_OPTIONS, { each: true }),
+    __metadata("design:type", Array)
+], StaffCreateDto.prototype, "permissions", void 0);
+class StaffUpdateDto {
+}
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], StaffUpdateDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsEmail)(),
+    __metadata("design:type", String)
+], StaffUpdateDto.prototype, "email", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(10),
+    (0, class_validator_1.IsByteLength)(10, 72),
+    __metadata("design:type", String)
+], StaffUpdateDto.prototype, "password", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(STAFF_PERMISSION_OPTIONS.length),
+    (0, class_validator_1.IsIn)(STAFF_PERMISSION_OPTIONS, { each: true }),
+    __metadata("design:type", Array)
+], StaffUpdateDto.prototype, "permissions", void 0);
 class SubscriptionUpdateDto {
 }
 __decorate([
@@ -291,6 +344,42 @@ __decorate([
     (0, class_validator_1.IsIn)(['confirmed', 'completed', 'cancelled', 'no_show']),
     __metadata("design:type", String)
 ], AppointmentStatusDto.prototype, "status", void 0);
+class ManualAppointmentDto {
+}
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], ManualAppointmentDto.prototype, "patient_name", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(7),
+    (0, class_validator_1.MaxLength)(30),
+    __metadata("design:type", String)
+], ManualAppointmentDto.prototype, "phone_number", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], ManualAppointmentDto.prototype, "doctor_name", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.Matches)(/^\d{4}-\d{2}-\d{2}$/),
+    __metadata("design:type", String)
+], ManualAppointmentDto.prototype, "appointment_date", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.Matches)(/^\d{2}:\d{2}$/),
+    __metadata("design:type", String)
+], ManualAppointmentDto.prototype, "appointment_time", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(500),
+    __metadata("design:type", String)
+], ManualAppointmentDto.prototype, "reason", void 0);
 function safeVoiceBodyFieldNames(value, depth = 0) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || depth >= 2)
         return [];
@@ -394,6 +483,7 @@ let AppController = AppController_1 = class AppController {
             role: user.role,
             tenant_id: user.tenant_id,
             email: user.email,
+            permissions: user.permissions || [],
         });
         return {
             user,
@@ -622,9 +712,50 @@ let AppController = AppController_1 = class AppController {
             throw new common_1.NotFoundException('Tenant not found');
         return { deleted: true, tenant_id: tenantId };
     }
-    getDashboard(tenantId, activityRange) {
+    getDashboard(tenantId, activityRange, request) {
         const dashboard = this.appService.getDashboard(tenantId, activityRange);
-        return dashboard;
+        if (request?.user?.role === 'tenant_admin')
+            return dashboard;
+        const permissions = new Set(request?.user?.permissions || []);
+        const canSeeOverview = permissions.has('overview:view');
+        const canSeeReports = permissions.has('reports:view');
+        return {
+            ...dashboard,
+            voice_agent: permissions.has('agents:view') ? dashboard.voice_agent : undefined,
+            telephony: permissions.has('agents:view') ? dashboard.telephony : undefined,
+            doctors: permissions.has('doctors:view') || permissions.has('doctors:manage') ? dashboard.doctors : [],
+            patients: permissions.has('patients:view') || permissions.has('patients:manage') || canSeeReports ? dashboard.patients : [],
+            bookings: permissions.has('appointments:view') || permissions.has('appointments:manage') || canSeeReports ? dashboard.bookings : [],
+            summary: canSeeOverview || canSeeReports ? dashboard.summary : undefined,
+            analytics: canSeeOverview || canSeeReports ? dashboard.analytics : undefined,
+        };
+    }
+    listStaff(tenantId) {
+        const staff = this.appService.listStaff(tenantId);
+        if (!staff)
+            throw new common_1.NotFoundException('Clinic not found');
+        return { staff };
+    }
+    createStaff(tenantId, body) {
+        const staff = this.appService.createStaff(tenantId, body);
+        if (staff === null)
+            throw new common_1.NotFoundException('Clinic not found');
+        if (!staff)
+            throw new common_1.ConflictException('An account with this email already exists');
+        return { staff, message: 'Staff account created.' };
+    }
+    updateStaff(tenantId, staffId, body) {
+        const staff = this.appService.updateStaff(tenantId, staffId, body);
+        if (staff === null)
+            throw new common_1.NotFoundException('Staff account not found');
+        if (!staff)
+            throw new common_1.ConflictException('An account with this email already exists');
+        return { staff, message: 'Staff account updated.' };
+    }
+    deleteStaff(tenantId, staffId) {
+        if (!this.appService.deleteStaff(tenantId, staffId))
+            throw new common_1.NotFoundException('Staff account not found');
+        return { deleted: true, staff_id: staffId };
     }
     updateVoiceAgent(tenantId, body) {
         const settings = this.appService.updateVoiceAgent(tenantId, body || {});
@@ -683,6 +814,14 @@ let AppController = AppController_1 = class AppController {
         if ('error' in result)
             throw new common_1.NotFoundException(result.error);
         return { appointment: result, message: 'Appointment status updated' };
+    }
+    async createManualAppointment(tenantId, body) {
+        const appointment = await this.appService.addBooking(tenantId, { ...body, id: `APT-${(0, node_crypto_1.randomUUID)()}`, status: 'confirmed' });
+        if (!appointment)
+            throw new common_1.NotFoundException('Clinic not found');
+        if ('error' in appointment)
+            throw new common_1.BadRequestException(appointment.error);
+        return { appointment, message: 'Appointment booked.' };
     }
     async triggerOrchestration(body) {
         const tenantId = String(body?.tenant_id ?? '');
@@ -966,14 +1105,60 @@ __decorate([
     (0, access_decorator_1.TenantScoped)(),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Query)('activity_range')),
+    __param(2, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "getDashboard", null);
+__decorate([
+    (0, common_1.Get)('api/tenant/:tenantId/staff'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "listStaff", null);
+__decorate([
+    (0, common_1.Post)('api/tenant/:tenantId/staff'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, StaffCreateDto]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "createStaff", null);
+__decorate([
+    (0, common_1.Patch)('api/tenant/:tenantId/staff/:staffId'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Param)('staffId')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, StaffUpdateDto]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "updateStaff", null);
+__decorate([
+    (0, common_1.Delete)('api/tenant/:tenantId/staff/:staffId'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Param)('staffId')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String, String]),
     __metadata("design:returntype", void 0)
-], AppController.prototype, "getDashboard", null);
+], AppController.prototype, "deleteStaff", null);
 __decorate([
     (0, common_1.Put)('api/tenant/:tenantId/voice-agent'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('agents:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -984,6 +1169,7 @@ __decorate([
     (0, common_1.Get)('api/tenant/:tenantId/doctors'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('doctors:view', 'doctors:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
@@ -993,6 +1179,7 @@ __decorate([
     (0, common_1.Post)('api/tenant/:tenantId/doctors'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('doctors:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -1003,6 +1190,7 @@ __decorate([
     (0, common_1.Patch)('api/tenant/:tenantId/doctors/:doctorId'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('doctors:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Param)('doctorId')),
     __param(2, (0, common_1.Body)()),
@@ -1014,6 +1202,7 @@ __decorate([
     (0, common_1.Post)('api/tenant/:tenantId/voice-agent/preview'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('agents:view'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -1024,6 +1213,7 @@ __decorate([
     (0, common_1.Get)('api/tenant/:tenantId/patients'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('patients:view', 'patients:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
@@ -1033,6 +1223,7 @@ __decorate([
     (0, common_1.Post)('api/tenant/:tenantId/patients'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('patients:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -1043,6 +1234,7 @@ __decorate([
     (0, common_1.Put)('api/tenant/:tenantId/patients/:patientId'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('patients:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Param)('patientId')),
     __param(2, (0, common_1.Body)()),
@@ -1054,6 +1246,7 @@ __decorate([
     (0, common_1.Delete)('api/tenant/:tenantId/patients/:patientId'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('patients:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Param)('patientId')),
     __metadata("design:type", Function),
@@ -1064,6 +1257,7 @@ __decorate([
     (0, common_1.Patch)('api/tenant/:tenantId/appointments/:appointmentId'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('appointments:manage'),
     __param(0, (0, common_1.Param)('tenantId')),
     __param(1, (0, common_1.Param)('appointmentId')),
     __param(2, (0, common_1.Body)()),
@@ -1072,8 +1266,20 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], AppController.prototype, "updateAppointmentStatus", null);
 __decorate([
+    (0, common_1.Post)('api/tenant/:tenantId/appointments'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.TenantScoped)(),
+    (0, access_decorator_1.Permissions)('appointments:manage'),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, ManualAppointmentDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "createManualAppointment", null);
+__decorate([
     (0, common_1.Post)('api/agent/booking'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.Roles)('tenant_admin'),
     (0, access_decorator_1.TenantScoped)(),
     __param(0, (0, common_1.Body)()),
     __metadata("design:type", Function),

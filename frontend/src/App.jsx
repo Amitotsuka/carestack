@@ -17,6 +17,26 @@ const telephonyConfigFields = ['phone_number', 'account_sid', 'app_id', 'region'
 const emptyProviderTelephony = Object.fromEntries(telephonyConfigFields.map((key) => [key, key === 'region' ? 'mumbai' : key === 'enabled' ? false : '']));
 const providerTelephonyDefaults = { sarvam: { ...emptyProviderTelephony }, exotel_voicebot: { ...emptyProviderTelephony } };
 const emptyClinicInterest = { clinic_name: '', contact_name: '', email: '', phone: '', plan: 'growth' };
+const STAFF_PERMISSION_GROUPS = [
+  { label: 'Overview', view: 'overview:view' },
+  { label: 'AI workflow', view: 'agents:view' },
+  { label: 'Doctors', view: 'doctors:view', manage: 'doctors:manage' },
+  { label: 'Patients', view: 'patients:view', manage: 'patients:manage' },
+  { label: 'Appointments', view: 'appointments:view', manage: 'appointments:manage' },
+  { label: 'Reports', view: 'reports:view' },
+];
+const availableClinicViews = (user) => {
+  if (!user || user.role === 'tenant_admin') return ['overview', 'agents', 'doctors', 'patients', 'appointments', 'reports'];
+  const permissions = new Set(user.permissions || []);
+  return [
+    permissions.has('overview:view') && 'overview',
+    permissions.has('agents:view') && 'agents',
+    (permissions.has('doctors:view') || permissions.has('doctors:manage')) && 'doctors',
+    (permissions.has('patients:view') || permissions.has('patients:manage')) && 'patients',
+    (permissions.has('appointments:view') || permissions.has('appointments:manage')) && 'appointments',
+    permissions.has('reports:view') && 'reports',
+  ].filter(Boolean);
+};
 
 const request = async (path, options = {}) => {
   let accessToken = '';
@@ -144,27 +164,37 @@ function App() {
   const [passwordTenantId, setPasswordTenantId] = useState(null);
   const [tenantPassword, setTenantPassword] = useState('');
   const [tenantPasswordConfirm, setTenantPasswordConfirm] = useState('');
+  const [tenantManagementFormOpen, setTenantManagementFormOpen] = useState(false);
   const [initialTenantPassword, setInitialTenantPassword] = useState('');
   const [initialTenantPasswordConfirm, setInitialTenantPasswordConfirm] = useState('');
   const [editingTenantPassword, setEditingTenantPassword] = useState('');
   const [editingTenantPasswordConfirm, setEditingTenantPasswordConfirm] = useState('');
   const [planForm, setPlanForm] = useState(emptyPlan);
   const [editingPlanId, setEditingPlanId] = useState(null);
+  const [planFormOpen, setPlanFormOpen] = useState(false);
   const [patientForm, setPatientForm] = useState(emptyPatient);
   const [editingPatientId, setEditingPatientId] = useState(null);
+  const [patientFormOpen, setPatientFormOpen] = useState(false);
   const [doctorForm, setDoctorForm] = useState({ name: '', specialty: '' });
   const [editingDoctorId, setEditingDoctorId] = useState(null);
   const [bookingForm, setBookingForm] = useState(emptyBooking);
+  const [bookingFormOpen, setBookingFormOpen] = useState(false);
+  const [appointmentRegisterOpen, setAppointmentRegisterOpen] = useState(true);
   const [tenantForm, setTenantForm] = useState(emptyTenant);
   const [appointmentQuery, setAppointmentQuery] = useState('');
   const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
-  const [appointmentDateFilter, setAppointmentDateFilter] = useState('upcoming');
+  const [appointmentDateFilter, setAppointmentDateFilter] = useState('all');
   const [overviewActivityRange, setOverviewActivityRange] = useState('7d');
   const [patientQuery, setPatientQuery] = useState('');
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
+  const [confirmationDialog, setConfirmationDialog] = useState(null);
+  const confirmationResolverRef = useRef(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [seenBookingIds, setSeenBookingIds] = useState([]);
+  const [seenClinicInterestIds, setSeenClinicInterestIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('carestack-seen-clinic-interests') || '[]'); } catch { return []; }
+  });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const notificationMenuRef = useRef(null);
   const [voiceAgent, setVoiceAgent] = useState(defaultVoiceAgent);
@@ -181,6 +211,21 @@ function App() {
   const [agentPreviewListening, setAgentPreviewListening] = useState(false);
   const [publicPlans, setPublicPlans] = useState([]);
   const [clinicInterests, setClinicInterests] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [staffForm, setStaffForm] = useState({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) });
+  const [staffFormOpen, setStaffFormOpen] = useState(false);
+
+  const askForConfirmation = (dialog) => new Promise((resolve) => {
+    confirmationResolverRef.current = resolve;
+    setConfirmationDialog(dialog);
+  });
+
+  const resolveConfirmation = (confirmed) => {
+    const resolve = confirmationResolverRef.current;
+    confirmationResolverRef.current = null;
+    setConfirmationDialog(null);
+    resolve?.(confirmed);
+  };
   const [clinicInterestForm, setClinicInterestForm] = useState(emptyClinicInterest);
   const [clinicInterestMessage, setClinicInterestMessage] = useState('');
   const [clinicInterestError, setClinicInterestError] = useState('');
@@ -261,7 +306,7 @@ function App() {
         }
         setSession(parsed);
         setPage('dashboard');
-        setActiveView('overview');
+        setActiveView(availableClinicViews(parsed)[0] || 'overview');
         await loadDashboard(parsed.tenant_id, true, true);
       } catch (loadError) {
         if (cancelled) return;
@@ -328,7 +373,7 @@ function App() {
       setSession(nextSession);
       setLoginOpen(false);
       setPage('dashboard');
-      setActiveView('overview');
+      setActiveView(nextSession.role === 'super_admin' ? 'overview' : availableClinicViews(nextSession)[0] || 'overview');
       if (nextSession.role === 'super_admin') {
         await loadAdminData();
       } else {
@@ -381,6 +426,39 @@ function App() {
       if (!silent) setError(err.message || 'Dashboard could not be loaded.');
       if (throwOnError) throw err;
     }
+  };
+
+  const loadStaff = async () => {
+    if (!session?.tenant_id || session.role !== 'tenant_admin') return;
+    try {
+      const response = await request(`/api/tenant/${session.tenant_id}/staff`);
+      setStaff(response.staff || []);
+    } catch (loadError) { setError(loadError.message); }
+  };
+
+  const submitStaffForm = async (event) => {
+    event.preventDefault();
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const { id, ...staffPayload } = staffForm;
+      const response = await request(`/api/tenant/${session.tenant_id}/staff${id ? `/${id}` : ''}`, {
+        method: id ? 'PATCH' : 'POST', body: JSON.stringify(staffPayload),
+      });
+      setNotice(id ? 'Staff access updated.' : 'Staff account created.');
+      setStaffForm({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) });
+      setStaffFormOpen(false);
+      await loadStaff();
+    } catch (saveError) { setError(saveError.message); }
+    finally { setBusy(false); }
+  };
+
+  const removeStaff = async (staffMember) => {
+    if (!window.confirm(`Remove ${staffMember.name}'s clinic access?`)) return;
+    try {
+      await request(`/api/tenant/${session.tenant_id}/staff/${staffMember.id}`, { method: 'DELETE' });
+      setNotice('Staff account removed.');
+      await loadStaff();
+    } catch (removeError) { setError(removeError.message); }
   };
 
   useEffect(() => {
@@ -535,7 +613,13 @@ function App() {
   }));
 
   const activateClinicVoice = async (tenantId) => {
-    if (!window.confirm('This creates an active inbound Sarvam deployment for the clinic number. Calls may incur Sarvam and Exotel charges. Continue?')) return;
+    const confirmed = await askForConfirmation({
+      title: 'Activate inbound calling?',
+      message: 'This creates an active inbound Sarvam deployment for the clinic number. Calls may incur Sarvam and Exotel charges.',
+      confirmLabel: 'Activate calling',
+      tone: 'primary',
+    });
+    if (!confirmed) return;
     setBusy(true); setError(''); setNotice('');
     try {
       const result = await request(`/api/tenants/${tenantId}/voice-deployment`, { method: 'POST', body: JSON.stringify({}) });
@@ -593,6 +677,15 @@ function App() {
   const notificationBookings = [...unreadBookingNotifications]
     .sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')))
     .slice(0, 8);
+  const unreadClinicInterests = clinicInterests.filter((lead) => !seenClinicInterestIds.includes(String(lead.id)));
+  const notificationClinicInterests = [...unreadClinicInterests]
+    .sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')))
+    .slice(0, 8);
+  const markClinicInterestsRead = () => {
+    const nextSeenIds = [...new Set([...seenClinicInterestIds, ...clinicInterests.map((lead) => String(lead.id))])];
+    setSeenClinicInterestIds(nextSeenIds);
+    try { localStorage.setItem('carestack-seen-clinic-interests', JSON.stringify(nextSeenIds)); } catch { /* Keep the in-memory state usable when storage is unavailable. */ }
+  };
   const markBookingNotificationsRead = () => {
     const nextSeenBookingIds = [...new Set([...seenBookingIds, ...bookings.map((booking) => String(booking.id))])];
     setSeenBookingIds(nextSeenBookingIds);
@@ -669,6 +762,7 @@ function App() {
 
   const editTenant = (tenant) => {
     setEditingTenantId(tenant.id);
+    setTenantManagementFormOpen(true);
     setPasswordTenantId(null);
     setTenantPassword('');
     setTenantPasswordConfirm('');
@@ -742,7 +836,13 @@ function App() {
   };
 
   const removeTenant = async (tenant) => {
-    if (!window.confirm(`Delete ${tenant.name} and its tenant workspace? This cannot be undone.`)) return;
+    const confirmed = await askForConfirmation({
+      title: 'Delete clinic workspace?',
+      message: `Delete ${tenant.name} and its tenant workspace? This cannot be undone.`,
+      confirmLabel: 'Delete clinic',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setError('');
     try {
       await request(`/api/tenants/${tenant.id}`, { method: 'DELETE' });
@@ -777,6 +877,7 @@ function App() {
       setNotice(`${data.plan.name} plan ${editingPlanId ? 'updated' : 'created'}.`);
       setPlanForm(emptyPlan);
       setEditingPlanId(null);
+      setPlanFormOpen(false);
       await loadAdminData();
     } catch (submitError) {
       setError(submitError.message);
@@ -787,6 +888,7 @@ function App() {
 
   const editPlan = (plan) => {
     setEditingPlanId(plan.id);
+    setPlanFormOpen(true);
     setPlanForm({
       id: plan.id,
       name: plan.name,
@@ -801,7 +903,13 @@ function App() {
   };
 
   const removePlan = async (plan) => {
-    if (!window.confirm(`Delete the ${plan.name} plan? Plans assigned to tenants cannot be deleted.`)) return;
+    const confirmed = await askForConfirmation({
+      title: 'Delete plan?',
+      message: `Delete the ${plan.name} plan? Plans assigned to tenants cannot be deleted.`,
+      confirmLabel: 'Delete plan',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setError('');
     try {
       await request(`/api/plans/${plan.id}`, { method: 'DELETE' });
@@ -827,6 +935,7 @@ function App() {
       setNotice(editingPatientId ? 'Patient record updated.' : 'Patient added.');
       setPatientForm(emptyPatient);
       setEditingPatientId(null);
+      setPatientFormOpen(false);
       await loadDashboard(session.tenant_id);
     } catch (submitError) {
       setError(submitError.message);
@@ -884,11 +993,20 @@ function App() {
   const editPatient = (patient) => {
     setPatientForm({ ...emptyPatient, ...patient, age: patient.age || '' });
     setEditingPatientId(patient.id);
+    setPatientFormOpen(true);
     setNotice('');
+    window.setTimeout(() => document.getElementById('patient-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
 
   const deletePatient = async (patientId) => {
-    if (!session?.tenant_id || !window.confirm('Delete this patient record?')) return;
+    if (!session?.tenant_id) return;
+    const confirmed = await askForConfirmation({
+      title: 'Delete patient record?',
+      message: 'This removes the patient record from this clinic workspace.',
+      confirmLabel: 'Delete patient',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setError('');
     try {
       await request(`/api/tenant/${session.tenant_id}/patients/${patientId}`, { method: 'DELETE' });
@@ -906,11 +1024,11 @@ function App() {
     setNotice('');
     setError('');
     try {
-      const result = await request('/api/agent/booking', {
-        method: 'POST',
-        body: JSON.stringify({ ...bookingForm, tenant_id: session.tenant_id }),
-      });
-      setNotice(`Appointment ${result.appointment.id} confirmed by Python booking agents.`);
+      const isClinicAdmin = session.role === 'tenant_admin';
+      const result = isClinicAdmin
+        ? await request('/api/agent/booking', { method: 'POST', body: JSON.stringify({ ...bookingForm, tenant_id: session.tenant_id }) })
+        : await request(`/api/tenant/${session.tenant_id}/appointments`, { method: 'POST', body: JSON.stringify(bookingForm) });
+      setNotice(isClinicAdmin ? `Appointment ${result.appointment.id} confirmed by Python booking agents.` : `Appointment ${result.appointment.id} booked.`);
       setBookingForm(emptyBooking);
       await loadDashboard(session.tenant_id);
     } catch (bookingError) {
@@ -922,9 +1040,20 @@ function App() {
 
   const updateAppointmentStatus = async (appointmentId, status) => {
     if (!session?.tenant_id) return;
-    if (status === 'cancelled' && !window.confirm('Cancel this appointment?')) {
-      await loadDashboard(session.tenant_id);
-      return;
+    if (status === 'cancelled') {
+      const appointment = bookings.find((booking) => String(booking.id) === String(appointmentId));
+      const confirmed = await askForConfirmation({
+        title: 'Cancel this appointment?',
+        message: appointment
+          ? `${appointment.patient_name} · ${appointment.appointment_date} at ${appointment.appointment_time}. The appointment will stay in the register with Cancelled status.`
+          : 'The appointment will stay in the register with Cancelled status.',
+        confirmLabel: 'Cancel appointment',
+        tone: 'danger',
+      });
+      if (!confirmed) {
+        await loadDashboard(session.tenant_id);
+        return;
+      }
     }
     setError('');
     try {
@@ -1128,7 +1257,11 @@ function App() {
         </section></div>)}
       </div>
       <section className="admin-panel mb-4" id="plan-management-form">
-        <div className="admin-panel-heading"><div><h3>{editingPlanId ? 'Edit plan' : 'Create a plan'}</h3><p>Set plan rates and included workspace limits. Leave a limit blank for unlimited.</p></div></div>
+        <button type="button" className={`workspace-section-toggle ${planFormOpen ? 'is-open' : ''}`} aria-expanded={planFormOpen} aria-controls="plan-management-fields" onClick={() => setPlanFormOpen((open) => !open)}>
+          <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{editingPlanId ? 'Edit plan' : 'Create a plan'}</span><span className="workspace-section-toggle-description">Set plan rates and included workspace limits. Leave a limit blank for unlimited.</span></span>
+          <span className="workspace-section-toggle-action">{planFormOpen ? 'Collapse −' : 'Expand +'}</span>
+        </button>
+        <div id="plan-management-fields" className="mt-3" hidden={!planFormOpen}>
         <form onSubmit={handlePlanSubmit}>
           <div className="row g-3">
             <div className="col-md-3"><label className="form-label" htmlFor="plan-id">Plan ID</label><input id="plan-id" className="form-control" required pattern="[a-z0-9]+(-[a-z0-9]+)*" value={planForm.id} disabled={Boolean(editingPlanId)} onChange={(event) => setPlanForm({ ...planForm, id: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /></div>
@@ -1140,6 +1273,7 @@ function App() {
           </div>
           <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingPlanId ? 'Save plan' : 'Create plan'}</button>{editingPlanId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingPlanId(null); setPlanForm(emptyPlan); }}>Cancel</button>}</div>
         </form>
+        </div>
       </section>
       <section className="admin-panel">
         <div className="admin-panel-heading"><div><h3>Subscription register</h3><p>Plan and billing changes apply immediately.</p></div></div>
@@ -1239,7 +1373,7 @@ function App() {
         <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-heading">
           <button className="login-close" aria-label="Close sign in" onClick={() => setLoginOpen(false)}>×</button>
           <p className="section-kicker">CARESTACK ACCESS</p><h2 id="login-heading">Welcome back.</h2><p className="login-subtitle">Choose your workspace to continue.</p>
-          <div className="login-role-switch" role="tablist" aria-label="Choose sign-in type"><button role="tab" aria-selected={loginRole === 'tenant'} className={loginRole === 'tenant' ? 'selected' : ''} onClick={() => openLogin('tenant')}>Clinic team</button><button role="tab" aria-selected={loginRole === 'super_admin'} className={loginRole === 'super_admin' ? 'selected' : ''} onClick={() => openLogin('super_admin')}>Platform admin</button></div>
+          <div className="login-role-switch" role="tablist" aria-label="Choose sign-in type"><button role="tab" aria-selected={loginRole === 'tenant'} className={loginRole === 'tenant' ? 'selected' : ''} onClick={() => openLogin('tenant')}>Clinic admin or staff</button><button role="tab" aria-selected={loginRole === 'super_admin'} className={loginRole === 'super_admin' ? 'selected' : ''} onClick={() => openLogin('super_admin')}>Platform admin</button></div>
           <div className="login-clinic-label"><span>{loginRole === 'tenant' ? 'CLINIC WORKSPACE' : 'PLATFORM CONTROL'}</span><strong>{loginRole === 'tenant' ? tenantBrand.name : 'CareStack platform'}</strong>{loginRole === 'tenant' && <small>{tenantBrand.domain}</small>}</div>
           <form onSubmit={handleLogin}>
             <label htmlFor="site-login-email">Work email</label><input id="site-login-email" type="email" autoComplete="username" required value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
@@ -1304,12 +1438,21 @@ function App() {
 
   const renderDashboard = () => {
     if (!session) return null;
+    const clinicAdmin = session.role === 'tenant_admin';
+    const grantedPermissions = new Set(session.permissions || []);
+    const canManage = (module) => clinicAdmin || grantedPermissions.has(`${module}:manage`);
     const workspaceNavigation = superAdmin
       ? [['overview', 'Overview', '⌂'], ['leads', 'Clinic requests', '✳'], ['tenants', 'Tenants', '▦'], ['subscriptions', 'Plans & subscriptions', '◈']]
-      : [['overview', 'Overview', '⌂'], ['agents', 'AI receptionist', '◉'], ['doctors', 'Doctors', '✚'], ['patients', 'Patients', '♙'], ['appointments', 'Appointments', '▣'], ['reports', 'Reports', '▥']];
+      : [
+        ['overview', 'Overview', '⌂', 'overview:view'], ['agents', 'AI receptionist', '◉', 'agents:view'],
+        ['doctors', 'Doctors', '✚', 'doctors:view', 'doctors:manage'], ['patients', 'Patients', '♙', 'patients:view', 'patients:manage'],
+        ['appointments', 'Appointments', '▣', 'appointments:view', 'appointments:manage'], ['reports', 'Reports', '▥', 'reports:view'],
+      ].filter(([, , , viewPermission, managePermission]) => clinicAdmin || grantedPermissions.has(viewPermission) || (managePermission && grantedPermissions.has(managePermission)))
+        .map(([view, label, icon]) => [view, label, icon])
+        .concat(clinicAdmin ? [['staff', 'Staff access', '♧']] : []);
     const pageTitle = superAdmin
       ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic requests' : 'Tenant management'
-      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'doctors' ? 'Doctor directory' : activeView === 'patients' ? 'Patient directory' : 'Appointments';
+      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'doctors' ? 'Doctor directory' : activeView === 'patients' ? 'Patient directory' : activeView === 'staff' ? 'Staff access' : 'Appointments';
     const workspacePlan = String(tenantData?.plan || '').replace(/\b\w/g, (char) => char.toUpperCase());
     const workspaceRegion = String(tenantData?.region || '').trim();
     const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
@@ -1319,18 +1462,18 @@ function App() {
         <div className="workspace-layout">
           <aside className="workspace-sidebar">
             <a className="workspace-brand" href="#workspace-home" aria-label={`${superAdmin ? 'CareStack' : tenantBrand.shortName} workspace home`}><span className="workspace-brand-mark">{superAdmin ? 'C' : tenantBrand.shortName.charAt(0).toUpperCase()}</span><span>{superAdmin ? 'CareStack' : tenantBrand.shortName}<small>{superAdmin ? 'PLATFORM WORKSPACE' : 'CLINIC WORKSPACE'}</small></span></a>
-            {!superAdmin && <div className="sidebar-clinic-card"><span className="clinic-avatar">{tenantBrand.shortName.charAt(0)}</span><span><strong title={displayedTenant}>{displayedTenant}</strong><small>{workspacePlan ? `${workspacePlan} plan${workspaceRegion ? ` · ${workspaceRegion}` : ''}` : `${workspaceRegion || 'Clinic'} workspace`}</small></span><i aria-hidden="true">⌄</i></div>}
+            <div className="sidebar-clinic-card"><span className="clinic-avatar">{superAdmin ? 'C' : tenantBrand.shortName.charAt(0)}</span><span><strong title={superAdmin ? 'CareStack platform' : displayedTenant}>{superAdmin ? 'CareStack platform' : displayedTenant}</strong><small>{superAdmin ? 'Super admin workspace' : workspacePlan ? `${workspacePlan} plan${workspaceRegion ? ` · ${workspaceRegion}` : ''}` : `${workspaceRegion || 'Clinic'} workspace`}</small></span><i aria-hidden="true">⌄</i></div>
             <p className="sidebar-section-label">WORKSPACE</p>
             <nav className="workspace-nav" aria-label="Workspace navigation">
               {workspaceNavigation.map(([view, label, icon]) => (
-                <button key={view} className={`workspace-nav-link ${activeView === view ? 'active' : ''}`} aria-current={activeView === view ? 'page' : undefined} onClick={() => { setActiveView(view); setError(''); setNotice(''); }}>
+                <button key={view} className={`workspace-nav-link ${activeView === view ? 'active' : ''}`} aria-current={activeView === view ? 'page' : undefined} onClick={() => { setActiveView(view); setError(''); setNotice(''); if (view === 'staff') loadStaff(); }}>
                   <span className="workspace-nav-icon" aria-hidden="true">{icon}</span><span className="workspace-nav-label">{label}</span>
                   {!superAdmin && view === 'appointments' && upcomingBookings.length > 0 && <span className="workspace-nav-count">{upcomingBookings.length}</span>}
                 </button>
               ))}
             </nav>
             <div className="sidebar-spacer" />
-            <div className="sidebar-help-card"><span className="help-orb">✦</span><strong>Need a hand?</strong><small>Your clinic workspace is ready for today.</small><button onClick={() => { setActiveView(superAdmin ? 'tenants' : 'agents'); }}>Explore workspace <span>→</span></button></div>
+            <div className="sidebar-help-card"><span className="help-orb">✦</span><strong>{superAdmin ? 'Platform controls' : 'Need a hand?'}</strong><small>{superAdmin ? 'Manage clinics, requests, and subscription plans.' : 'Your clinic workspace is ready for today.'}</small><button onClick={() => { setActiveView(superAdmin ? 'tenants' : 'agents'); }}>{superAdmin ? 'Manage clinics' : 'Explore workspace'} <span>→</span></button></div>
           </aside>
 
           <main className="workspace-main">
@@ -1345,12 +1488,20 @@ function App() {
                     <option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option>
                   </select>
                 </label>}
-                {!superAdmin && activeView === 'overview' && <div className="workspace-notification-wrap" ref={notificationMenuRef}>
-                  <button className={`workspace-icon-button workspace-notification-trigger ${notificationsOpen ? 'open' : ''}`} onClick={() => setNotificationsOpen((open) => !open)} aria-label={`Notifications, ${unreadBookingNotifications.length} unread`} aria-expanded={notificationsOpen} aria-haspopup="dialog" title="Booking notifications">
+                <div className="workspace-notification-wrap" ref={notificationMenuRef}>
+                  <button className={`workspace-icon-button workspace-notification-trigger ${notificationsOpen ? 'open' : ''}`} onClick={() => setNotificationsOpen((open) => !open)} aria-label={`Notifications, ${superAdmin ? unreadClinicInterests.length : unreadBookingNotifications.length} unread`} aria-expanded={notificationsOpen} aria-haspopup="dialog" title={superAdmin ? 'Clinic request notifications' : 'Booking notifications'}>
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
-                    {unreadBookingNotifications.length > 0 && <span className="workspace-notification-count">{unreadBookingNotifications.length > 99 ? '99+' : unreadBookingNotifications.length}</span>}
+                    {(superAdmin ? unreadClinicInterests.length : unreadBookingNotifications.length) > 0 && <span className="workspace-notification-count">{(superAdmin ? unreadClinicInterests.length : unreadBookingNotifications.length) > 99 ? '99+' : superAdmin ? unreadClinicInterests.length : unreadBookingNotifications.length}</span>}
                   </button>
-                  {notificationsOpen && <section className="workspace-notification-popover" role="dialog" aria-label="Booking notifications">
+                  {notificationsOpen && (superAdmin ? <section className="workspace-notification-popover" role="dialog" aria-label="Clinic request notifications">
+                    <div className="notification-popover-heading"><div><strong>Notifications</strong><small>{unreadClinicInterests.length ? `${unreadClinicInterests.length} new clinic request${unreadClinicInterests.length === 1 ? '' : 's'}` : 'You’re all caught up'}</small></div><button type="button" onClick={markClinicInterestsRead} disabled={!unreadClinicInterests.length}>Mark all read</button></div>
+                    {notificationClinicInterests.length ? <div className="notification-list">{notificationClinicInterests.map((lead) => <button className="notification-item" key={lead.id} onClick={() => { markClinicInterestsRead(); setNotificationsOpen(false); setActiveView('leads'); }}>
+                      <span className="notification-unread-dot" aria-hidden="true" />
+                      <span className="notification-item-copy"><strong>{lead.clinic_name || 'New clinic request'}</strong><small>{lead.contact_name || lead.email || 'Contact details submitted'} · {lead.created_at ? new Date(lead.created_at).toLocaleDateString('en-IN') : 'Recently received'}</small></span>
+                      <span className="notification-item-arrow" aria-hidden="true">→</span>
+                    </button>)}</div> : <div className="notification-empty"><span aria-hidden="true">✓</span><strong>No new clinic requests</strong><small>New clinic requests will appear here.</small></div>}
+                    <button type="button" className="notification-view-all" onClick={() => { markClinicInterestsRead(); setNotificationsOpen(false); setActiveView('leads'); }}>View clinic requests <span aria-hidden="true">→</span></button>
+                  </section> : <section className="workspace-notification-popover" role="dialog" aria-label="Booking notifications">
                     <div className="notification-popover-heading"><div><strong>Notifications</strong><small>{unreadBookingNotifications.length ? `${unreadBookingNotifications.length} new booking${unreadBookingNotifications.length === 1 ? '' : 's'}` : 'You’re all caught up'}</small></div><button type="button" onClick={markBookingNotificationsRead} disabled={!unreadBookingNotifications.length}>Mark all read</button></div>
                     {notificationBookings.length ? <div className="notification-list">{notificationBookings.map((booking) => <button className="notification-item" key={booking.id} onClick={() => { markBookingNotificationsRead(); setNotificationsOpen(false); setActiveView('appointments'); }}>
                       <span className="notification-unread-dot" aria-hidden="true" />
@@ -1358,12 +1509,12 @@ function App() {
                       <span className="notification-item-arrow" aria-hidden="true">→</span>
                     </button>)}</div> : <div className="notification-empty"><span aria-hidden="true">✓</span><strong>No new bookings</strong><small>New appointment bookings will appear here.</small></div>}
                     <button type="button" className="notification-view-all" onClick={() => { markBookingNotificationsRead(); setNotificationsOpen(false); setActiveView('appointments'); }}>View appointments <span aria-hidden="true">→</span></button>
-                  </section>}
-                </div>}
+                  </section>)}
+                </div>
                 <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''} aria-hidden="true">↻</span><span className="workspace-refresh-label">{refreshing ? 'Updating' : 'Refresh'}</span></button>
-                {!superAdmin && <button className="btn btn-primary workspace-new-booking" onClick={() => { setActiveView('appointments'); window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>＋ <span>New appointment</span></button>}
-              {superAdmin && activeView === 'tenants' && <button className="btn btn-primary" onClick={() => document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>＋ Add clinic</button>}
-                <div className="workspace-user-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : 'Clinic team')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
+                {!superAdmin && clinicAdmin && <button className="btn btn-primary workspace-new-booking" onClick={() => { setActiveView('appointments'); setBookingFormOpen(true); window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>＋ <span>New appointment</span></button>}
+              {superAdmin && activeView === 'tenants' && <button className="btn btn-primary" onClick={() => { setTenantManagementFormOpen(true); document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>＋ Add clinic</button>}
+                <div className="workspace-user-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : session.role === 'tenant_admin' ? 'Clinic admin' : 'Receptionist')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
               </div>
             </header>
 
@@ -1379,7 +1530,7 @@ function App() {
 
               {!superAdmin && activeView === 'overview' && renderTenantOverview()}
 
-              {!superAdmin && activeView === 'agents' && <div className="row g-4">
+              {!superAdmin && activeView === 'agents' && (clinicAdmin ? <div className="row g-4">
                 <div className="col-12"><section className="tenant-insight-panel">
                   <div className="admin-panel-heading"><div><h3>Try the booking agent</h3><p>Preview how it answers using this clinic’s current availability settings. This test needs no phone number or Exotel credentials.</p></div><span className="status-pill confirmed">Agent preview</span></div>
                   <form onSubmit={previewVoiceAgent} className="row g-2"><div className="col-md-6"><label className="visually-hidden" htmlFor="agent-preview-input">What does the caller say?</label><input id="agent-preview-input" className="form-control" value={agentPreviewInput} onChange={(event) => setAgentPreviewInput(event.target.value)} placeholder="Example: I need to book an appointment" /></div><div className="col-md-3"><button className="btn btn-primary w-100" disabled={busy || !agentPreviewInput.trim()}>{busy ? 'Checking…' : 'Preview text reply'}</button></div><div className="col-md-3"><button type="button" className="btn btn-outline-primary w-100" disabled={busy || agentPreviewListening} onClick={startSpokenAgentPreview}>{agentPreviewListening ? 'Listening…' : 'Speak to preview'}</button></div></form>
@@ -1420,7 +1571,11 @@ function App() {
                   <div className="agenda-list"><div className="agenda-row"><span className="agenda-index">01</span><div><strong>Voice intent agent</strong><small>Greets callers and identifies appointment requests.</small></div><span className="status-pill confirmed">Ready</span></div><div className="agenda-row"><span className="agenda-index">02</span><div><strong>Intake agent</strong><small>Collects patient name, callback number, doctor, date, and reason.</small></div><span className="status-pill confirmed">Ready</span></div><div className="agenda-row"><span className="agenda-index">03</span><div><strong>Appointment agent</strong><small>Checks clinic hours and records the confirmed request.</small></div><span className="status-pill confirmed">Ready</span></div><div className="agenda-row"><span className="agenda-index">04</span><div><strong>Confirmation agent</strong><small>Reads the appointment details back to the caller.</small></div><span className="status-pill confirmed">Ready</span></div></div>
                   <div className="alert alert-info mt-3 mb-0">This number is stored against this clinic. Live AI call answering requires provider provisioning and a voice webhook connection.</div>
                 </section></div>
-              </div>}
+              </div> : <div className="row g-4">
+                <div className="col-12"><section className="tenant-insight-panel"><div className="admin-panel-heading"><div><h3>AI receptionist workflow</h3><p>View the clinic-approved information and call schedule. Editing is reserved for the clinic administrator.</p></div><span className="status-pill confirmed">View only</span></div>
+                  <div className="row g-3"><div className="col-md-6"><strong>Call availability</strong><p className="text-muted mb-0">{voiceAgent.availability === 'all_day' ? 'All day, every day' : `${voiceAgent.open_time}–${voiceAgent.close_time}`} · {voiceAgent.timezone}</p></div><div className="col-md-6"><strong>Appointment length</strong><p className="text-muted mb-0">{voiceAgent.appointment_duration_minutes || 30} minutes</p></div><div className="col-md-6"><strong>Clinic address</strong><p className="text-muted mb-0">{voiceAgent.clinic_context?.address || 'Not set'}</p></div><div className="col-md-6"><strong>Services</strong><p className="text-muted mb-0">{(voiceAgent.clinic_context?.services || []).join(', ') || 'Not set'}</p></div><div className="col-12"><strong>Frequently asked questions</strong>{(voiceAgent.clinic_context?.faqs || []).filter((faq) => faq.question || faq.answer).length ? <ul className="mt-2">{voiceAgent.clinic_context.faqs.filter((faq) => faq.question || faq.answer).map((faq, index) => <li key={index}><strong>{faq.question}</strong>{faq.answer && <span className="d-block text-muted">{faq.answer}</span>}</li>)}</ul> : <p className="text-muted mb-0">No FAQs configured.</p>}</div></div>
+                </section></div>
+              </div>)}
 
               {superAdmin && activeView === 'overview' && renderAdminOverview()}
               {superAdmin && activeView === 'subscriptions' && renderSubscriptions()}
@@ -1477,12 +1632,16 @@ function App() {
                       </>}
                     </div><p className="alert alert-info mt-3 mb-0">Exotel credentials and phone routing are saved separately from the AI agent configuration. Use Verify Exotel account to check the saved Account SID and credentials. Provider-specific activation is available for the existing managed agent options.</p><div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save calling settings'}</button><button type="button" className="btn btn-outline-secondary" onClick={() => setTelephonyTenantId(null)}>Cancel</button><button type="button" className="btn btn-outline-success ms-auto" disabled={busy || !tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.exotel_credentials_configured || !telephonyForm.account_sid} onClick={() => verifyExotelForClinic(telephonyTenantId)}>Verify Exotel account</button>{telephonyForm.voice_provider !== 'exotel_voicebot' && <button type="button" className="btn btn-success" disabled={busy || !tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.credentials_configured || tenants.find((tenant) => tenant.id === telephonyTenantId)?.telephony?.deployment_status === 'active'} onClick={() => activateClinicVoice(telephonyTenantId)}>Activate inbound calls</button>}</div></form>
                   </div>}
-                  <div id="tenant-management-form"><h4 className="mb-1">{editingTenantId ? 'Edit tenant' : 'Onboard a clinic'}</h4>
-                  <p className="text-muted mb-3">{editingTenantId ? 'Update clinic identity, plan, billing cycle, or subscription state.' : 'Create its tenant identity and first administrator.'}</p>
+                  <div id="tenant-management-form">
+                  <button type="button" className={`workspace-section-toggle ${tenantManagementFormOpen ? 'is-open' : ''}`} aria-expanded={tenantManagementFormOpen} aria-controls="tenant-management-fields" onClick={() => setTenantManagementFormOpen((open) => !open)}>
+                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{editingTenantId ? 'Edit tenant' : 'Onboard a clinic'}</span><span className="workspace-section-toggle-description">{editingTenantId ? 'Update clinic identity, plan, billing cycle, or subscription state.' : 'Create its tenant identity and first administrator.'}</span></span>
+                    <span className="workspace-section-toggle-action">{tenantManagementFormOpen ? 'Collapse −' : 'Expand +'}</span>
+                  </button>
+                  <div id="tenant-management-fields" className="mt-3" hidden={!tenantManagementFormOpen}>
                   <form onSubmit={handleTenantSubmit}>
                     <div className="row g-3">
                       <div className="col-md-6"><label className="form-label" htmlFor="tenant-name">Clinic name</label><input id="tenant-name" className="form-control" required minLength="2" value={tenantForm.tenant_name} onChange={(event) => setTenantForm({ ...tenantForm, tenant_name: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label" htmlFor="tenant-domain">Tenant slug</label><div className="input-group"><input id="tenant-domain" className="form-control" pattern="[a-z0-9]+(-[a-z0-9]+)*" required minLength="2" value={tenantForm.tenant_domain} onChange={(event) => setTenantForm({ ...tenantForm, tenant_domain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /><span className="input-group-text">workspace</span></div><small className="text-muted">Clinics use the shared CareStack URL with this tenant slug.</small></div>
+                      <div className="col-md-6"><label className="form-label" htmlFor="tenant-domain">Tenant slug</label><div className="input-group"><input id="tenant-domain" className="form-control" pattern="[a-z0-9]+(-[a-z0-9]+)*" required minLength="2" value={tenantForm.tenant_domain} onChange={(event) => setTenantForm({ ...tenantForm, tenant_domain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} /><span className="input-group-text">{TENANT_ROOT_DOMAIN || 'workspace'}</span></div><small className="text-muted">{TENANT_ROOT_DOMAIN ? `Clinic sign-in URL: https://${tenantForm.tenant_domain || 'your-slug'}.${TENANT_ROOT_DOMAIN}` : 'The slug identifies this clinic in the shared portal. Configure VITE_TENANT_ROOT_DOMAIN to use branded clinic subdomains.'}</small></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-name">Admin name</label><input id="admin-name" className="form-control" required value={tenantForm.admin_name} onChange={(event) => setTenantForm({ ...tenantForm, admin_name: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-email">Admin email</label><input id="admin-email" type="email" className="form-control" required value={tenantForm.admin_email} onChange={(event) => setTenantForm({ ...tenantForm, admin_email: event.target.value })} /></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="admin-phone">Admin phone</label><input id="admin-phone" type="tel" className="form-control" required value={tenantForm.admin_phone} onChange={(event) => setTenantForm({ ...tenantForm, admin_phone: event.target.value })} /></div>
@@ -1496,13 +1655,40 @@ function App() {
                       <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingTenantId ? (editingTenantPassword || editingTenantPasswordConfirm ? 'Save tenant & password' : 'Save tenant') : 'Create tenant'}</button>{editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingTenantId(null); setTenantForm(emptyTenant); setEditingTenantPassword(''); setEditingTenantPasswordConfirm(''); }}>Cancel</button>}{!editingTenantId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setTenantForm(emptyTenant); setInitialTenantPassword(''); setInitialTenantPasswordConfirm(''); }}>Clear form</button>}</div>
                   </form>
                   </div>
+                  </div>
                 </div>
+              </div>}
+
+              {!superAdmin && clinicAdmin && activeView === 'staff' && <div className="row g-4 mb-4">
+                <div className="col-12"><section className="admin-panel">
+                  <div className="admin-panel-heading"><div><h3>Clinic staff access</h3><p>Create receptionist accounts and choose which clinic sections each account can view or manage.</p></div><span className="status-pill confirmed">Role based access</span></div>
+                  <button type="button" className={`workspace-section-toggle ${staffFormOpen ? 'is-open' : ''}`} aria-expanded={staffFormOpen} aria-controls="staff-account-fields" onClick={() => { setStaffFormOpen((open) => !open); if (!staffForm.id) setStaffForm({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) }); }}>
+                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{staffForm.id ? 'Edit staff access' : 'Add clinic staff'}</span><span className="workspace-section-toggle-description">Each staff member signs in with their own email and password.</span></span><span className="workspace-section-toggle-action">{staffFormOpen ? 'Collapse −' : 'Expand +'}</span>
+                  </button>
+                  <div id="staff-account-fields" className="mt-3" hidden={!staffFormOpen}>
+                    <form onSubmit={submitStaffForm}>
+                      <div className="row g-3 mb-4">
+                        <div className="col-md-4"><label className="form-label" htmlFor="staff-name">Staff name</label><input id="staff-name" className="form-control" required minLength="2" maxLength="120" value={staffForm.name} onChange={(event) => setStaffForm({ ...staffForm, name: event.target.value })} /></div>
+                        <div className="col-md-4"><label className="form-label" htmlFor="staff-email">Login email</label><input id="staff-email" className="form-control" type="email" required value={staffForm.email} onChange={(event) => setStaffForm({ ...staffForm, email: event.target.value })} /></div>
+                        <div className="col-md-4"><label className="form-label" htmlFor="staff-password">{staffForm.id ? 'New password (optional)' : 'Temporary password'}</label><input id="staff-password" className="form-control" type="password" autoComplete="new-password" minLength="10" maxLength="72" required={!staffForm.id} value={staffForm.password} onChange={(event) => setStaffForm({ ...staffForm, password: event.target.value })} /><small className="text-muted">At least 10 characters. Share it securely with this staff member.</small></div>
+                      </div>
+                      <h5 className="mb-1">Permissions</h5><p className="small text-muted">AI workflow is always view only for receptionist accounts. Staff access and billing controls remain clinic admin only.</p>
+                      <div className="row g-2">{STAFF_PERMISSION_GROUPS.map(({ label, view, manage }) => <div className="col-md-6 col-xl-4" key={view}><div className="border rounded-3 p-3 h-100 d-flex align-items-center justify-content-between gap-3"><strong>{label}</strong><div className="d-flex gap-3">{[[view, 'View']].concat(manage ? [[manage, 'Manage']] : []).map(([permission, permissionLabel]) => <label className="d-flex align-items-center gap-1 small" key={permission}><input className="form-check-input mt-0" type="checkbox" checked={staffForm.permissions.includes(permission)} disabled={view === 'agents:view' && permission === 'agents:view'} onChange={(event) => { const next = new Set(staffForm.permissions); if (event.target.checked) { next.add(permission); if (permission.endsWith(':manage')) next.add(view); } else { next.delete(permission); if (permission === view && manage) next.delete(manage); } setStaffForm({ ...staffForm, permissions: [...next] }); }} /><span>{permissionLabel}</span></label>)}</div></div></div>)}</div>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : staffForm.id ? 'Save staff access' : 'Create staff account'}</button>{staffForm.id && <button type="button" className="btn btn-outline-secondary" onClick={() => { setStaffForm({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) }); setStaffFormOpen(false); }}>Cancel edit</button>}</div>
+                    </form>
+                  </div>
+                </section></div>
+                <div className="col-12"><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Staff accounts</h3><p>{staff.length} receptionist {staff.length === 1 ? 'account' : 'accounts'} for this clinic</p></div></div>
+                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Name</th><th>Login</th><th>Granted access</th><th className="text-end">Actions</th></tr></thead><tbody>{staff.length ? staff.map((member) => <tr key={member.id}><td className="fw-semibold">{member.name}<small className="d-block text-muted">Receptionist</small></td><td>{member.email}</td><td>{member.permissions.length ? member.permissions.map((permission) => permission.split(':').join(' ')).join(' · ') : <span className="text-muted">No sections assigned</span>}</td><td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', permissions: member.permissions || [] }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit access</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan="4" className="text-muted py-4">No staff accounts yet. Add a receptionist above.</td></tr>}</tbody></table></div>
+                </section></div>
               </div>}
 
               {!superAdmin && activeView === 'doctors' && <div className="row g-4 mb-4">
                 <div className="col-lg-4"><div className="card border-0 shadow-sm rounded-4 h-100"><div className="card-body">
                   <h4 className="mb-1">{editingDoctorId ? 'Edit doctor' : 'Add clinic doctor'}</h4>
                   <p className="text-muted small">Active doctors appear in the AI receptionist and appointment availability checks.</p>
+                  {!canManage('doctors') && <p className="alert alert-info py-2">You have view-only access to the clinic doctor roster.</p>}
+                  <fieldset disabled={!canManage('doctors')}>
                   <form onSubmit={handleDoctorSubmit}>
                     <label className="form-label" htmlFor="doctor-name">Doctor name</label>
                     <input id="doctor-name" className="form-control mb-3" required minLength="2" maxLength="120" value={doctorForm.name} onChange={(event) => setDoctorForm({ ...doctorForm, name: event.target.value })} placeholder="Dr. Anjali Sharma" />
@@ -1510,19 +1696,24 @@ function App() {
                     <input id="doctor-specialty" className="form-control" maxLength="160" value={doctorForm.specialty} onChange={(event) => setDoctorForm({ ...doctorForm, specialty: event.target.value })} placeholder="General medicine" />
                     <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{editingDoctorId ? 'Save doctor' : 'Add doctor'}</button>{editingDoctorId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setDoctorForm({ name: '', specialty: '' }); setEditingDoctorId(null); }}>Cancel</button>}</div>
                   </form>
+                  </fieldset>
                 </div></div></div>
                 <div className="col-lg-8"><div className="card border-0 shadow-sm rounded-4 h-100"><div className="card-body">
                   <div className="d-flex justify-content-between align-items-center gap-3 mb-3"><div><h4 className="mb-1">Clinic doctor roster</h4><p className="small text-muted mb-0">{(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').length} active · saved in this clinic database</p></div></div>
                   {(tenantData?.doctors || []).length ? <div className="list-group list-group-flush">{tenantData.doctors.map((doctor) => <div className="list-group-item px-0 d-flex justify-content-between align-items-center gap-3" key={doctor.id}>
                     <div><strong>{doctor.name}</strong>{doctor.specialty && <span className="text-muted"> · {doctor.specialty}</span>}<small className="d-block"><span className={`status-pill ${doctor.status === 'active' ? 'confirmed' : 'cancelled'}`}>{doctor.status}</span></small></div>
-                    <div className="d-flex gap-2"><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => editDoctor(doctor)}>Edit</button><button type="button" className={`btn btn-sm ${doctor.status === 'active' ? 'btn-outline-danger' : 'btn-outline-success'}`} onClick={() => toggleDoctorStatus(doctor)}>{doctor.status === 'active' ? 'Deactivate' : 'Reactivate'}</button></div>
+                    {canManage('doctors') && <div className="d-flex gap-2"><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => editDoctor(doctor)}>Edit</button><button type="button" className={`btn btn-sm ${doctor.status === 'active' ? 'btn-outline-danger' : 'btn-outline-success'}`} onClick={() => toggleDoctorStatus(doctor)}>{doctor.status === 'active' ? 'Deactivate' : 'Reactivate'}</button></div>}
                   </div>)}</div> : <div className="empty-insight">No doctors added yet. Add your clinic’s verified doctors to enable real availability checks and voice bookings.</div>}
                 </div></div></div>
               </div>}
 
-              {!superAdmin && activeView === 'patients' && <div className="card border-0 shadow-sm rounded-4 mb-4">
+              {!superAdmin && activeView === 'patients' && canManage('patients') && <div className="card border-0 shadow-sm rounded-4 mb-4" id="patient-form">
                 <div className="card-body">
-                  <h4 className="mb-3">{editingPatientId ? 'Edit patient' : 'Register patient'}</h4>
+                  <button type="button" className={`workspace-section-toggle ${patientFormOpen ? 'is-open' : ''}`} aria-expanded={patientFormOpen} aria-controls="patient-form-fields" onClick={() => setPatientFormOpen((open) => !open)}>
+                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{editingPatientId ? 'Edit patient' : 'Register patient'}</span><span className="workspace-section-toggle-description">{editingPatientId ? 'Update this patient’s contact and status details.' : 'Add a patient record to this clinic.'}</span></span>
+                    <span className="workspace-section-toggle-action">{patientFormOpen ? 'Collapse −' : 'Expand +'}</span>
+                  </button>
+                  <div id="patient-form-fields" className="mt-3" hidden={!patientFormOpen}>
                   <form onSubmit={handlePatientSubmit}>
                     <div className="row g-3">
                       <div className="col-md-4"><label className="form-label" htmlFor="patient-name">Full name</label><input id="patient-name" className="form-control" required minLength="2" value={patientForm.name} onChange={(event) => setPatientForm({ ...patientForm, name: event.target.value })} /></div>
@@ -1532,26 +1723,31 @@ function App() {
                       <div className="col-md-3"><label className="form-label" htmlFor="patient-status">Status</label><select id="patient-status" className="form-select" value={patientForm.status} onChange={(event) => setPatientForm({ ...patientForm, status: event.target.value })}><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
                       <div className="col-md-6"><label className="form-label" htmlFor="patient-notes">Notes</label><input id="patient-notes" className="form-control" value={patientForm.notes || ''} onChange={(event) => setPatientForm({ ...patientForm, notes: event.target.value })} /></div>
                     </div>
-                    <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{editingPatientId ? 'Save changes' : 'Add patient'}</button>{editingPatientId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setPatientForm(emptyPatient); setEditingPatientId(null); }}>Cancel</button>}</div>
+                    <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{editingPatientId ? 'Save changes' : 'Add patient'}</button>{editingPatientId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setPatientForm(emptyPatient); setEditingPatientId(null); setPatientFormOpen(false); }}>Cancel</button>}</div>
                   </form>
+                  </div>
                 </div>
               </div>}
 
-              {!superAdmin && activeView === 'appointments' && <div className="card border-0 shadow-sm rounded-4 mb-4" id="booking-form">
+              {!superAdmin && activeView === 'appointments' && canManage('appointments') && <div className="card border-0 shadow-sm rounded-4 mb-4" id="booking-form">
                 <div className="card-body">
-                  <h4 className="mb-1">Book an appointment</h4>
-                  <p className="text-muted mb-3">Requests are processed by the Python booking agents.</p>
-                  <form onSubmit={handleBookingSubmit}>
-                    <div className="row g-3">
-                      <div className="col-md-6"><label className="form-label" htmlFor="booking-patient">Patient name</label><input id="booking-patient" className="form-control" required minLength="2" value={bookingForm.patient_name} onChange={(event) => setBookingForm({ ...bookingForm, patient_name: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label" htmlFor="booking-phone">Phone number</label><input id="booking-phone" type="tel" className="form-control" required minLength="7" value={bookingForm.phone_number} onChange={(event) => setBookingForm({ ...bookingForm, phone_number: event.target.value })} /></div>
-                      <div className="col-md-6"><label className="form-label" htmlFor="booking-doctor">Doctor</label><select id="booking-doctor" className="form-select" value={bookingForm.doctor_name} onChange={(event) => setBookingForm({ ...bookingForm, doctor_name: event.target.value })}><option value="">Choose a configured clinic doctor</option>{clinicDoctors.map((doctor) => <option key={doctor} value={doctor}>{doctor}</option>)}</select></div>
-                      <div className="col-md-3"><label className="form-label" htmlFor="booking-date">Date</label><input id="booking-date" type="date" className="form-control" required value={bookingForm.appointment_date} onChange={(event) => setBookingForm({ ...bookingForm, appointment_date: event.target.value })} /></div>
-                      <div className="col-md-3"><label className="form-label" htmlFor="booking-time">Time</label><input id="booking-time" type="time" className="form-control" required value={bookingForm.appointment_time} onChange={(event) => setBookingForm({ ...bookingForm, appointment_time: event.target.value })} /></div>
-                      <div className="col-12"><label className="form-label" htmlFor="booking-reason">Reason for visit</label><input id="booking-reason" className="form-control" value={bookingForm.reason} onChange={(event) => setBookingForm({ ...bookingForm, reason: event.target.value })} /></div>
-                    </div>
-                    <button className="btn btn-primary mt-3" disabled={busy}>{busy ? 'Agent processing…' : 'Run booking agents'}</button>
-                  </form>
+                  <button type="button" className={`workspace-section-toggle ${bookingFormOpen ? 'is-open' : ''}`} aria-expanded={bookingFormOpen} aria-controls="booking-form-fields" onClick={() => setBookingFormOpen((open) => !open)}>
+                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">Book an appointment</span><span className="workspace-section-toggle-description">Enter the patient and appointment details.</span></span>
+                    <span className="workspace-section-toggle-action">{bookingFormOpen ? 'Collapse −' : 'Expand +'}</span>
+                  </button>
+                  <div id="booking-form-fields" className="mt-3" hidden={!bookingFormOpen}>
+                    <form onSubmit={handleBookingSubmit}>
+                      <div className="row g-3">
+                        <div className="col-md-6"><label className="form-label" htmlFor="booking-patient">Patient name</label><input id="booking-patient" className="form-control" required minLength="2" value={bookingForm.patient_name} onChange={(event) => setBookingForm({ ...bookingForm, patient_name: event.target.value })} /></div>
+                        <div className="col-md-6"><label className="form-label" htmlFor="booking-phone">Phone number</label><input id="booking-phone" type="tel" className="form-control" required minLength="7" value={bookingForm.phone_number} onChange={(event) => setBookingForm({ ...bookingForm, phone_number: event.target.value })} /></div>
+                        <div className="col-md-6"><label className="form-label" htmlFor="booking-doctor">Doctor</label><select id="booking-doctor" className="form-select" value={bookingForm.doctor_name} onChange={(event) => setBookingForm({ ...bookingForm, doctor_name: event.target.value })}><option value="">Choose a configured clinic doctor</option>{clinicDoctors.map((doctor) => <option key={doctor} value={doctor}>{doctor}</option>)}</select></div>
+                        <div className="col-md-3"><label className="form-label" htmlFor="booking-date">Date</label><input id="booking-date" type="date" className="form-control" required value={bookingForm.appointment_date} onChange={(event) => setBookingForm({ ...bookingForm, appointment_date: event.target.value })} /></div>
+                        <div className="col-md-3"><label className="form-label" htmlFor="booking-time">Time</label><input id="booking-time" type="time" className="form-control" required value={bookingForm.appointment_time} onChange={(event) => setBookingForm({ ...bookingForm, appointment_time: event.target.value })} /></div>
+                        <div className="col-12"><label className="form-label" htmlFor="booking-reason">Reason for visit</label><input id="booking-reason" className="form-control" value={bookingForm.reason} onChange={(event) => setBookingForm({ ...bookingForm, reason: event.target.value })} /></div>
+                      </div>
+                      <button className="btn btn-primary mt-3" disabled={busy}>{busy ? 'Agent processing…' : 'Run booking agents'}</button>
+                    </form>
+                  </div>
                 </div>
               </div>}
 
@@ -1575,7 +1771,11 @@ function App() {
 
               {!superAdmin && (activeView === 'overview' || activeView === 'patients' || activeView === 'appointments') && <div className="card border-0 shadow-sm rounded-4">
                 <div className="card-body">
-                  <div className="d-flex justify-content-between align-items-center gap-3 flex-wrap mb-3"><div><h4 className="mb-1">{activeView === 'appointments' ? 'Appointment register' : activeView === 'overview' ? 'Recent patients' : 'Patient directory'}</h4>{activeView === 'appointments' && <p className="text-muted small mb-0">Update outcomes here; changes recalculate clinic analytics.</p>}</div>{activeView === 'patients' && <button className="btn btn-sm btn-outline-primary" onClick={() => exportTenantCsv('patients')}>Export patients</button>}</div>
+                  {activeView === 'appointments' ? <button type="button" className={`workspace-section-toggle mb-3 ${appointmentRegisterOpen ? 'is-open' : ''}`} aria-expanded={appointmentRegisterOpen} aria-controls="appointment-register-fields" onClick={() => setAppointmentRegisterOpen((open) => !open)}>
+                    <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">Appointment register</span><span className="workspace-section-toggle-description">Showing {filteredBookings.length} of {bookings.length} records. Status changes stay saved on the appointment.</span></span>
+                    <span className="workspace-section-toggle-action">{appointmentRegisterOpen ? 'Collapse −' : 'Expand +'}</span>
+                  </button> : <div className="d-flex justify-content-between align-items-center gap-3 flex-wrap mb-3"><div><h4 className="mb-1">{activeView === 'overview' ? 'Recent patients' : 'Patient directory'}</h4></div>{activeView === 'patients' && <button className="btn btn-sm btn-outline-primary" onClick={() => exportTenantCsv('patients')}>Export patients</button>}</div>}
+                  <div id="appointment-register-fields" hidden={activeView === 'appointments' && !appointmentRegisterOpen}>
                   {activeView === 'appointments' && <div className="workspace-table-tools">
                     <div className="workspace-search"><label className="visually-hidden" htmlFor="appointment-search">Search appointments</label><span aria-hidden="true">⌕</span><input id="appointment-search" className="form-control" placeholder="Search patient, doctor, phone, or reference" value={appointmentQuery} onChange={(event) => setAppointmentQuery(event.target.value)} /></div>
                     <div className="workspace-filter-pills" role="group" aria-label="Appointment date range">{[['today', 'Today'], ['upcoming', 'Upcoming'], ['all', 'All dates']].map(([value, label]) => <button type="button" key={value} className={appointmentDateFilter === value ? 'active' : ''} aria-pressed={appointmentDateFilter === value} onClick={() => setAppointmentDateFilter(value)}>{label}</button>)}</div>
@@ -1589,24 +1789,24 @@ function App() {
                   </div>}
                   <div className="table-responsive">
                     <table className="table align-middle">
-                      {activeView === 'appointments' ? <thead><tr><th>Appointment</th><th>Patient</th><th>Doctor</th><th>Date &amp; time</th><th>Status</th><th>Update</th></tr></thead> : <thead>
+                      {activeView === 'appointments' ? <thead><tr><th>Appointment</th><th>Patient</th><th>Doctor</th><th>Date &amp; time</th><th>Status</th>{canManage('appointments') && <th>Update</th>}</tr></thead> : <thead>
                         <tr>
                           <th>ID</th>
                           <th>Name</th>
                           <th>Phone</th>
                           <th>Email</th>
                           <th>Status</th>
-                          {activeView === 'patients' && <th className="text-end">Actions</th>}
+                          {activeView === 'patients' && canManage('patients') && <th className="text-end">Actions</th>}
                         </tr>
                       </thead>}
                       <tbody>
                         {activeView === 'appointments' ? filteredBookings.length === 0 ? (
-                          <tr><td colSpan="6" className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
+                          <tr><td colSpan={canManage('appointments') ? 6 : 5} className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
                         ) : filteredBookings.map((booking) => (
-                          <tr key={booking.id}><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td><td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></td></tr>
+                          <tr key={booking.id}><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td>{canManage('appointments') && <td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></td>}</tr>
                         )) : displayedPatients.length === 0 ? (
                           <tr>
-                            <td colSpan={activeView === 'patients' ? 6 : 5} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
+                            <td colSpan={activeView === 'patients' && canManage('patients') ? 6 : 5} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
                           </tr>
                         ) : (
                           displayedPatients.map((patient) => (
@@ -1618,18 +1818,31 @@ function App() {
                               <td>
                                 <span className="badge bg-success-subtle text-success rounded-pill">{patient.status}</span>
                               </td>
-                              {activeView === 'patients' && <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editPatient(patient)}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={() => deletePatient(patient.id)}>Delete</button></td>}
+                              {activeView === 'patients' && canManage('patients') && <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editPatient(patient)}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={() => deletePatient(patient.id)}>Delete</button></td>}
                             </tr>
                           ))
                         )}
                       </tbody>
                     </table>
                   </div>
+                  </div>
                 </div>
               </div>}
               </div>
             </main>
           </div>
+          {confirmationDialog && <div className="workspace-confirm-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) resolveConfirmation(false); }} onKeyDown={(event) => { if (event.key === 'Escape') resolveConfirmation(false); }}>
+            <section className={`workspace-confirm-dialog ${confirmationDialog.tone === 'danger' ? 'danger' : ''}`} role="alertdialog" aria-modal="true" aria-labelledby="workspace-confirm-title" aria-describedby="workspace-confirm-message">
+              <span className={`workspace-confirm-mark ${confirmationDialog.tone === 'danger' ? 'danger' : ''}`} aria-hidden="true">{confirmationDialog.tone === 'danger' ? '!' : '?'}</span>
+              <p className="workspace-confirm-eyebrow">CONFIRM ACTION</p>
+              <h2 id="workspace-confirm-title">{confirmationDialog.title}</h2>
+              <p id="workspace-confirm-message">{confirmationDialog.message}</p>
+              <div className="workspace-confirm-actions">
+                <button type="button" className="workspace-confirm-cancel" onClick={() => resolveConfirmation(false)}>Go back</button>
+                <button type="button" autoFocus className={`workspace-confirm-accept ${confirmationDialog.tone === 'danger' ? 'danger' : ''}`} onClick={() => resolveConfirmation(true)}>{confirmationDialog.confirmLabel || 'Continue'}</button>
+              </div>
+            </section>
+          </div>}
       </div>
     );
   };

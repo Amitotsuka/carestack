@@ -76,6 +76,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         tenant_id: any;
         email: string;
         tenant_domain?: undefined;
+        permissions?: undefined;
     } | {
         user_id: string;
         role: string;
@@ -83,7 +84,48 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         tenant_id: string;
         tenant_domain: string;
         email: string;
+        permissions: string[];
     }>;
+    getStaffAccess(tenantId: string, userId: string): {
+        tenant_id: string;
+        role: string;
+        permissions: string[];
+    };
+    listStaff(tenantId: string): {
+        id: string;
+        tenant_id: string;
+        name: string;
+        email: string;
+        role: string;
+        permissions: string[];
+    }[];
+    createStaff(tenantId: string, payload: {
+        name: string;
+        email: string;
+        password: string;
+        permissions: string[];
+    }): false | {
+        id: string;
+        tenant_id: string;
+        name: string;
+        email: string;
+        role: string;
+        permissions: string[];
+    };
+    updateStaff(tenantId: string, staffId: string, payload: {
+        name?: string;
+        email?: string;
+        password?: string;
+        permissions?: string[];
+    }): false | {
+        id: string;
+        tenant_id: string;
+        name: string;
+        email: string;
+        role: string;
+        permissions: string[];
+    };
+    deleteStaff(tenantId: string, staffId: string): boolean;
     listTenants(): {
         id: string;
         name: string;

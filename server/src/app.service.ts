@@ -14,7 +14,13 @@ type TenantUser = {
   email: string;
   role: string;
   password_hash: string;
+  permissions?: string[];
 };
+
+const staffPermissions = new Set([
+  'overview:view', 'agents:view', 'doctors:view', 'doctors:manage',
+  'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'reports:view',
+]);
 
 type Patient = {
   id: string;
@@ -387,12 +393,65 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
             tenant_id: tenant.id,
             tenant_domain: tenant.domain,
             email,
+            permissions: user.role === 'tenant_admin' ? [...staffPermissions] : (user.permissions || []),
           };
         }
       }
     }
 
     return null;
+  }
+
+  getStaffAccess(tenantId: string, userId: string) {
+    const tenant = this.tenants[tenantId];
+    const user = tenant?.users.find((item) => item.id === userId && item.role === 'receptionist');
+    return user ? { tenant_id: tenantId, role: user.role, permissions: user.permissions || [] } : null;
+  }
+
+  listStaff(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    return tenant.users.filter((user) => user.role !== 'tenant_admin').map(({ id, name, email, role, permissions }) => ({ id, tenant_id: tenantId, name, email, role, permissions: permissions || [] }));
+  }
+
+  createStaff(tenantId: string, payload: { name: string; email: string; password: string; permissions: string[] }) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    const email = payload.email.trim().toLowerCase();
+    if (email === this.superAdminEmail || Object.values(this.tenants).some((item) => item.users.some((user) => user.email.toLowerCase() === email))) return false;
+    const user: TenantUser = {
+      id: `staff-${randomUUID()}`, tenant_id: tenantId, name: payload.name.trim(), email,
+      role: 'receptionist', password_hash: bcrypt.hashSync(payload.password, 12),
+      permissions: [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission)),
+    };
+    tenant.users.push(user);
+    this.persistState();
+    return { id: user.id, tenant_id: user.tenant_id, name: user.name, email: user.email, role: user.role, permissions: user.permissions };
+  }
+
+  updateStaff(tenantId: string, staffId: string, payload: { name?: string; email?: string; password?: string; permissions?: string[] }) {
+    const tenant = this.tenants[tenantId];
+    const user = tenant?.users.find((item) => item.id === staffId && item.role !== 'tenant_admin');
+    if (!tenant || !user) return null;
+    if (payload.email) {
+      const email = payload.email.trim().toLowerCase();
+      if (email === this.superAdminEmail || Object.values(this.tenants).some((item) => item.users.some((candidate) => candidate.id !== staffId && candidate.email.toLowerCase() === email))) return false;
+      user.email = email;
+    }
+    if (payload.name !== undefined) user.name = payload.name.trim();
+    if (payload.password) user.password_hash = bcrypt.hashSync(payload.password, 12);
+    if (payload.permissions) user.permissions = [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission));
+    this.persistState();
+    return { id: user.id, tenant_id: user.tenant_id, name: user.name, email: user.email, role: user.role, permissions: user.permissions || [] };
+  }
+
+  deleteStaff(tenantId: string, staffId: string) {
+    const tenant = this.tenants[tenantId];
+    const user = tenant?.users.find((item) => item.id === staffId && item.role !== 'tenant_admin');
+    if (!tenant || !user) return false;
+    tenant.users = tenant.users.filter((item) => item.id !== staffId);
+    this.persistState();
+    return true;
   }
 
   listTenants() {

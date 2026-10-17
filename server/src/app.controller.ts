@@ -1,11 +1,11 @@
-import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, Req, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { AppService } from './app.service';
 import { AccessGuard } from './auth/access.guard';
-import { Roles, TenantScoped } from './auth/access.decorator';
+import { Permissions, Roles, TenantScoped } from './auth/access.decorator';
 
 class LoginDto {
   @IsEmail()
@@ -89,6 +89,28 @@ class TenantPasswordDto {
   password: string;
 }
 
+const STAFF_PERMISSION_OPTIONS = ['overview:view', 'agents:view', 'doctors:view', 'doctors:manage', 'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'reports:view'];
+class StaffCreateDto {
+  @IsString() @MinLength(2) @MaxLength(120)
+  name: string;
+  @IsEmail()
+  email: string;
+  @IsString() @MinLength(10) @IsByteLength(10, 72)
+  password: string;
+  @IsArray() @ArrayMaxSize(STAFF_PERMISSION_OPTIONS.length) @IsIn(STAFF_PERMISSION_OPTIONS, { each: true })
+  permissions: string[];
+}
+class StaffUpdateDto {
+  @IsOptional() @IsString() @MinLength(2) @MaxLength(120)
+  name?: string;
+  @IsOptional() @IsEmail()
+  email?: string;
+  @IsOptional() @IsString() @MinLength(10) @IsByteLength(10, 72)
+  password?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(STAFF_PERMISSION_OPTIONS.length) @IsIn(STAFF_PERMISSION_OPTIONS, { each: true })
+  permissions?: string[];
+}
+
 class SubscriptionUpdateDto {
   @IsOptional() @IsString()
   plan?: string;
@@ -147,6 +169,21 @@ class DoctorUpdateDto {
 class AppointmentStatusDto {
   @IsIn(['confirmed', 'completed', 'cancelled', 'no_show'])
   status: string;
+}
+
+class ManualAppointmentDto {
+  @IsString() @MinLength(2) @MaxLength(120)
+  patient_name: string;
+  @IsString() @MinLength(7) @MaxLength(30)
+  phone_number: string;
+  @IsString() @MinLength(2) @MaxLength(120)
+  doctor_name: string;
+  @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  appointment_date: string;
+  @IsString() @Matches(/^\d{2}:\d{2}$/)
+  appointment_time: string;
+  @IsOptional() @IsString() @MaxLength(500)
+  reason?: string;
 }
 
 function safeVoiceBodyFieldNames(value: unknown, depth = 0): unknown {
@@ -251,6 +288,7 @@ export class AppController {
       role: user.role,
       tenant_id: user.tenant_id,
       email: user.email,
+      permissions: user.permissions || [],
     });
 
     return {
@@ -555,14 +593,69 @@ export class AppController {
   @Get('api/tenant/:tenantId/dashboard')
   @UseGuards(AccessGuard)
   @TenantScoped()
-  getDashboard(@Param('tenantId') tenantId: string, @Query('activity_range') activityRange?: string) {
+  getDashboard(@Param('tenantId') tenantId: string, @Query('activity_range') activityRange?: string, @Req() request?: any) {
     const dashboard = this.appService.getDashboard(tenantId, activityRange);
-    return dashboard;
+    if (request?.user?.role === 'tenant_admin') return dashboard;
+    const permissions = new Set<string>(request?.user?.permissions || []);
+    const canSeeOverview = permissions.has('overview:view');
+    const canSeeReports = permissions.has('reports:view');
+    return {
+      ...dashboard,
+      voice_agent: permissions.has('agents:view') ? dashboard.voice_agent : undefined,
+      telephony: permissions.has('agents:view') ? dashboard.telephony : undefined,
+      doctors: permissions.has('doctors:view') || permissions.has('doctors:manage') ? dashboard.doctors : [],
+      patients: permissions.has('patients:view') || permissions.has('patients:manage') || canSeeReports ? dashboard.patients : [],
+      bookings: permissions.has('appointments:view') || permissions.has('appointments:manage') || canSeeReports ? dashboard.bookings : [],
+      summary: canSeeOverview || canSeeReports ? dashboard.summary : undefined,
+      analytics: canSeeOverview || canSeeReports ? dashboard.analytics : undefined,
+    };
+  }
+
+  @Get('api/tenant/:tenantId/staff')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  listStaff(@Param('tenantId') tenantId: string) {
+    const staff = this.appService.listStaff(tenantId);
+    if (!staff) throw new NotFoundException('Clinic not found');
+    return { staff };
+  }
+
+  @Post('api/tenant/:tenantId/staff')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  createStaff(@Param('tenantId') tenantId: string, @Body() body: StaffCreateDto) {
+    const staff = this.appService.createStaff(tenantId, body);
+    if (staff === null) throw new NotFoundException('Clinic not found');
+    if (!staff) throw new ConflictException('An account with this email already exists');
+    return { staff, message: 'Staff account created.' };
+  }
+
+  @Patch('api/tenant/:tenantId/staff/:staffId')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  updateStaff(@Param('tenantId') tenantId: string, @Param('staffId') staffId: string, @Body() body: StaffUpdateDto) {
+    const staff = this.appService.updateStaff(tenantId, staffId, body);
+    if (staff === null) throw new NotFoundException('Staff account not found');
+    if (!staff) throw new ConflictException('An account with this email already exists');
+    return { staff, message: 'Staff account updated.' };
+  }
+
+  @Delete('api/tenant/:tenantId/staff/:staffId')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  deleteStaff(@Param('tenantId') tenantId: string, @Param('staffId') staffId: string) {
+    if (!this.appService.deleteStaff(tenantId, staffId)) throw new NotFoundException('Staff account not found');
+    return { deleted: true, staff_id: staffId };
   }
 
   @Put('api/tenant/:tenantId/voice-agent')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('agents:manage')
   updateVoiceAgent(@Param('tenantId') tenantId: string, @Body() body: any) {
     const settings = this.appService.updateVoiceAgent(tenantId, body || {});
     if (settings === null) throw new NotFoundException('Clinic not found');
@@ -573,6 +666,7 @@ export class AppController {
   @Get('api/tenant/:tenantId/doctors')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('doctors:view', 'doctors:manage')
   getDoctors(@Param('tenantId') tenantId: string) {
     const doctors = this.appService.getDoctors(tenantId);
     if (!doctors) throw new NotFoundException('Clinic not found');
@@ -582,6 +676,7 @@ export class AppController {
   @Post('api/tenant/:tenantId/doctors')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('doctors:manage')
   async addDoctor(@Param('tenantId') tenantId: string, @Body() body: DoctorCreateDto) {
     const doctor = await this.appService.addDoctor(tenantId, body);
     if (!doctor) throw new NotFoundException('Clinic not found');
@@ -592,6 +687,7 @@ export class AppController {
   @Patch('api/tenant/:tenantId/doctors/:doctorId')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('doctors:manage')
   async updateDoctor(@Param('tenantId') tenantId: string, @Param('doctorId') doctorId: string, @Body() body: DoctorUpdateDto) {
     const doctor = await this.appService.updateDoctor(tenantId, doctorId, body);
     if (!doctor) throw new NotFoundException('Doctor not found');
@@ -602,6 +698,7 @@ export class AppController {
   @Post('api/tenant/:tenantId/voice-agent/preview')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('agents:view')
   previewVoiceAgent(@Param('tenantId') tenantId: string, @Body() body: any) {
     const preview = this.appService.previewVoiceAgent(tenantId, String(body?.caller_message || ''));
     if (!preview) throw new NotFoundException('Clinic not found');
@@ -611,6 +708,7 @@ export class AppController {
   @Get('api/tenant/:tenantId/patients')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('patients:view', 'patients:manage')
   getPatients(@Param('tenantId') tenantId: string) {
     return { patients: this.appService.getPatients(tenantId) };
   }
@@ -618,6 +716,7 @@ export class AppController {
   @Post('api/tenant/:tenantId/patients')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('patients:manage')
   addPatient(@Param('tenantId') tenantId: string, @Body() body: PatientDto) {
     return { patient: this.appService.addPatient(tenantId, body), message: 'Patient created' };
   }
@@ -625,6 +724,7 @@ export class AppController {
   @Put('api/tenant/:tenantId/patients/:patientId')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('patients:manage')
   updatePatient(
     @Param('tenantId') tenantId: string,
     @Param('patientId') patientId: string,
@@ -636,6 +736,7 @@ export class AppController {
   @Delete('api/tenant/:tenantId/patients/:patientId')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('patients:manage')
   deletePatient(@Param('tenantId') tenantId: string, @Param('patientId') patientId: string) {
     return this.appService.deletePatient(tenantId, patientId);
   }
@@ -643,6 +744,7 @@ export class AppController {
   @Patch('api/tenant/:tenantId/appointments/:appointmentId')
   @UseGuards(AccessGuard)
   @TenantScoped()
+  @Permissions('appointments:manage')
   updateAppointmentStatus(
     @Param('tenantId') tenantId: string,
     @Param('appointmentId') appointmentId: string,
@@ -657,8 +759,20 @@ export class AppController {
     return { appointment: result, message: 'Appointment status updated' };
   }
 
+  @Post('api/tenant/:tenantId/appointments')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Permissions('appointments:manage')
+  async createManualAppointment(@Param('tenantId') tenantId: string, @Body() body: ManualAppointmentDto) {
+    const appointment = await this.appService.addBooking(tenantId, { ...body, id: `APT-${randomUUID()}`, status: 'confirmed' });
+    if (!appointment) throw new NotFoundException('Clinic not found');
+    if ('error' in appointment) throw new BadRequestException(appointment.error);
+    return { appointment, message: 'Appointment booked.' };
+  }
+
   @Post('api/agent/booking')
   @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
   @TenantScoped()
   async triggerOrchestration(@Body() body: any) {
     const tenantId = String(body?.tenant_id ?? '');

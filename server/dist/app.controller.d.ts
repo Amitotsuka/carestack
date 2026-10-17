@@ -36,6 +36,18 @@ declare class TenantUpdateDto {
 declare class TenantPasswordDto {
     password: string;
 }
+declare class StaffCreateDto {
+    name: string;
+    email: string;
+    password: string;
+    permissions: string[];
+}
+declare class StaffUpdateDto {
+    name?: string;
+    email?: string;
+    password?: string;
+    permissions?: string[];
+}
 declare class SubscriptionUpdateDto {
     plan?: string;
     billing_cycle?: string;
@@ -69,6 +81,14 @@ declare class DoctorUpdateDto {
 declare class AppointmentStatusDto {
     status: string;
 }
+declare class ManualAppointmentDto {
+    patient_name: string;
+    phone_number: string;
+    doctor_name: string;
+    appointment_date: string;
+    appointment_time: string;
+    reason?: string;
+}
 export declare class AppController {
     private readonly appService;
     private readonly jwtService;
@@ -86,6 +106,7 @@ export declare class AppController {
             tenant_id: any;
             email: string;
             tenant_domain?: undefined;
+            permissions?: undefined;
         } | {
             user_id: string;
             role: string;
@@ -93,6 +114,7 @@ export declare class AppController {
             tenant_id: string;
             tenant_domain: string;
             email: string;
+            permissions: string[];
         };
         access_token: string;
         token_type: string;
@@ -1432,7 +1454,7 @@ export declare class AppController {
         deleted: boolean;
         tenant_id: string;
     };
-    getDashboard(tenantId: string, activityRange?: string): {
+    getDashboard(tenantId: string, activityRange?: string, request?: any): {
         statusCode: number;
         message: string;
         tenant_id?: undefined;
@@ -1546,6 +1568,141 @@ export declare class AppController {
         }[];
         statusCode?: undefined;
         message?: undefined;
+    } | {
+        voice_agent: {
+            clinic_context: any;
+            enabled: boolean;
+            availability: "all_day" | "business_hours";
+            open_time: string;
+            close_time: string;
+            timezone: string;
+            appointment_duration_minutes: number;
+        };
+        telephony: {
+            phone_number: string;
+            enabled: boolean;
+            voice_provider: "sarvam" | "exotel_voicebot";
+        };
+        doctors: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            specialty: string;
+            status: "active" | "inactive";
+            created_at: string;
+            updated_at: string;
+        }[];
+        patients: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            phone: string;
+            email?: string;
+            age?: number;
+            status: string;
+            notes?: string;
+            created_at?: string;
+        }[];
+        bookings: {
+            id: string;
+            patient_id?: string;
+            patient_name: string;
+            phone_number: string;
+            doctor_name: string;
+            appointment_date: string;
+            appointment_time: string;
+            duration_minutes?: number;
+            reason?: string;
+            status: string;
+            created_at?: string;
+        }[];
+        summary: {
+            patients: number;
+            appointments: number;
+            active_patients: number;
+            upcoming_appointments: number;
+            completed_appointments: number;
+            cancellation_rate: number;
+        };
+        analytics: {
+            summary: {
+                active_patients: number;
+                upcoming_appointments: number;
+                completed_appointments: number;
+                cancellation_rate: number;
+                patient_activity: {
+                    current: number;
+                    previous: number;
+                };
+                booking_activity: {
+                    current: number;
+                    previous: number;
+                };
+            };
+            activity_range: string;
+            activity: {
+                date: string;
+                label: string;
+                patients: number;
+                bookings: number;
+            }[];
+            schedule: {
+                date: string;
+                label: string;
+                count: number;
+            }[];
+            status_breakdown: {
+                status: string;
+                count: number;
+            }[];
+            doctor_workload: {
+                doctor: string;
+                count: number;
+            }[];
+        };
+        statusCode: number;
+        message: string;
+        tenant_id?: undefined;
+        tenant_name?: undefined;
+        admin_name?: undefined;
+        plan?: undefined;
+        region?: undefined;
+    };
+    listStaff(tenantId: string): {
+        staff: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            email: string;
+            role: string;
+            permissions: string[];
+        }[];
+    };
+    createStaff(tenantId: string, body: StaffCreateDto): {
+        staff: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            email: string;
+            role: string;
+            permissions: string[];
+        };
+        message: string;
+    };
+    updateStaff(tenantId: string, staffId: string, body: StaffUpdateDto): {
+        staff: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            email: string;
+            role: string;
+            permissions: string[];
+        };
+        message: string;
+    };
+    deleteStaff(tenantId: string, staffId: string): {
+        deleted: boolean;
+        staff_id: string;
     };
     updateVoiceAgent(tenantId: string, body: any): {
         voice_agent: {
@@ -1672,6 +1829,22 @@ export declare class AppController {
         };
         message: string;
     };
+    createManualAppointment(tenantId: string, body: ManualAppointmentDto): Promise<{
+        appointment: {
+            id: string;
+            patient_id?: string;
+            patient_name: string;
+            phone_number: string;
+            doctor_name: string;
+            appointment_date: string;
+            appointment_time: string;
+            duration_minutes?: number;
+            reason?: string;
+            status: string;
+            created_at?: string;
+        };
+        message: string;
+    }>;
     triggerOrchestration(body: any): Promise<{
         source: string;
         data: any;
