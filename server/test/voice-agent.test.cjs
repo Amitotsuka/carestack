@@ -146,7 +146,10 @@ test('voice tool dispatch accepts direct and supported wrapped arguments and saf
   }, '', '', 'application/json');
   assert.equal(booking.appointment.id, 'VOICE-exotel-call-001');
 
-  const shapeLog = JSON.parse(emittedLogs[1]);
+  const shapeLog = emittedLogs
+    .map((line) => JSON.parse(line))
+    .find((entry) => entry.event === 'voice_tool.request_timing' && entry.received_action === 'faq');
+  assert.ok(shapeLog, 'expected a request timing log for the FAQ call');
   assert.equal(shapeLog.event, 'voice_tool.request_timing');
   assert.equal(shapeLog.received_action, 'faq');
   assert.equal(shapeLog.content_type, 'application/json');
