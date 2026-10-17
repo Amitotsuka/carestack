@@ -944,9 +944,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         booking_hours: hours.availability === 'all_day' ? 'all day' : `${hours.open_time}–${hours.close_time} ${hours.timezone}`,
         availability_source: 'portal appointment calendar',
         appointment_duration_minutes: this.appointmentDuration(tenantId),
-        address: context.address || null, services: context.services, fees: context.fees || null, doctors: context.doctors,
+        address: context.address || null, services: context.services, fees: context.fees || null, doctors: this.getClinicDoctorCandidates(tenantId),
+        doctor_list_source: 'clinic configuration and existing appointment records',
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
-        response_policy: 'Only values returned here are approved. Accept natural date and time expressions. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. Offer a human receptionist for other clinic questions.',
+        response_policy: 'Only values returned here are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. Offer a human receptionist for other clinic questions.',
       };
     }
     if (action === 'faq') {
@@ -1024,7 +1025,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       };
     }
     if (action === 'book') {
-      const requiredFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'date', 'time', 'reason'];
+      const requiredFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'date', 'time'];
       const missingFields = requiredFields.filter((field) => payload?.[field] === undefined || payload?.[field] === null || (typeof payload[field] === 'string' && !payload[field].trim()));
       if (missingFields.length) return { error: `Missing required booking fields: ${missingFields.join(', ')}.` };
       if (payload.confirmed !== true) return { error: 'Caller confirmation is required before booking.' };
@@ -1035,7 +1036,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       const patientName = String(payload.patient_name).trim();
       const phone = String(payload.phone_number).trim();
       const doctor = String(payload.doctor_name || '').trim();
-      const reason = String(payload.reason).trim();
+      const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
       if (patientName.length < 2 || patientName.length > 120) return { error: 'patient_name must be between 2 and 120 characters.' };
       if (!/^\+?[\d\s()-]{8,20}$/.test(phone)) return { error: 'phone_number must contain a valid phone number.' };
       if (doctor.length > 120) return { error: 'doctor_name must be 120 characters or fewer.' };
