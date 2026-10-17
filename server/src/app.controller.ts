@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { randomUUID } from 'node:crypto';
@@ -555,8 +555,8 @@ export class AppController {
   @Get('api/tenant/:tenantId/dashboard')
   @UseGuards(AccessGuard)
   @TenantScoped()
-  getDashboard(@Param('tenantId') tenantId: string) {
-    const dashboard = this.appService.getDashboard(tenantId);
+  getDashboard(@Param('tenantId') tenantId: string, @Query('activity_range') activityRange?: string) {
+    const dashboard = this.appService.getDashboard(tenantId, activityRange);
     return dashboard;
   }
 

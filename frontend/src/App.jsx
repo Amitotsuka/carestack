@@ -118,6 +118,14 @@ const getTenantBrand = () => {
 function App() {
   const [tenantBrand, setTenantBrand] = useState(getTenantBrand);
   const [page, setPage] = useState('landing');
+  const [sessionRestoring, setSessionRestoring] = useState(() => {
+    try {
+      const savedSession = JSON.parse(localStorage.getItem('carestack-session') || 'null');
+      return Boolean(savedSession?.access_token && savedSession.token !== 'demo-token');
+    } catch {
+      return false;
+    }
+  });
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginRole, setLoginRole] = useState('tenant');
   const [activeView, setActiveView] = useState('overview');
@@ -151,6 +159,7 @@ function App() {
   const [appointmentQuery, setAppointmentQuery] = useState('');
   const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
   const [appointmentDateFilter, setAppointmentDateFilter] = useState('upcoming');
+  const [overviewActivityRange, setOverviewActivityRange] = useState('7d');
   const [patientQuery, setPatientQuery] = useState('');
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
@@ -216,24 +225,34 @@ function App() {
   };
 
   useEffect(() => {
-    let parsed;
-    try {
-      parsed = JSON.parse(localStorage.getItem('carestack-session') || 'null');
-    } catch {
-      localStorage.removeItem('carestack-session');
-    }
-    if (!parsed) return;
-    if (parsed.token === 'demo-token' || !parsed.access_token) {
-      localStorage.removeItem('carestack-session');
-      return;
-    }
-    if (parsed.role === 'super_admin') {
-      setSession(parsed);
-      setPage('dashboard');
-      setActiveView('overview');
-      loadAdminData().catch((loadError) => setError(loadError.message));
-    } else if (parsed.tenant_id) {
-      request(`/api/tenant/resolve/${encodeURIComponent(tenantBrand.domain)}`).then((hostTenant) => {
+    let cancelled = false;
+    const restoreSession = async () => {
+      try {
+        let parsed;
+        try {
+          parsed = JSON.parse(localStorage.getItem('carestack-session') || 'null');
+        } catch {
+          localStorage.removeItem('carestack-session');
+          return;
+        }
+        if (!parsed) return;
+        if (parsed.token === 'demo-token' || !parsed.access_token) {
+          localStorage.removeItem('carestack-session');
+          return;
+        }
+        if (parsed.role === 'super_admin') {
+          setSession(parsed);
+          setPage('dashboard');
+          setActiveView('overview');
+          await loadAdminData();
+          return;
+        }
+        if (!parsed.tenant_id) {
+          localStorage.removeItem('carestack-session');
+          return;
+        }
+
+        const hostTenant = await request(`/api/tenant/resolve/${encodeURIComponent(tenantBrand.domain)}`);
         if (hostTenant.id !== parsed.tenant_id || hostTenant.subscription_status !== 'active') {
           localStorage.removeItem('carestack-session');
           setPage('login');
@@ -242,9 +261,19 @@ function App() {
         }
         setSession(parsed);
         setPage('dashboard');
-        loadDashboard(parsed.tenant_id);
-      }).catch((loadError) => setError(loadError.message));
-    }
+        setActiveView('overview');
+        await loadDashboard(parsed.tenant_id, true, true);
+      } catch (loadError) {
+        if (cancelled) return;
+        setSession(null);
+        setPage('login');
+        setError(loadError.message || 'Your clinic workspace could not be restored. Please sign in again.');
+      } finally {
+        if (!cancelled) setSessionRestoring(false);
+      }
+    };
+    restoreSession();
+    return () => { cancelled = true; };
   }, [tenantBrand.domain]);
 
   useEffect(() => {
@@ -312,10 +341,10 @@ function App() {
     }
   };
 
-  const loadDashboard = async (tenantId, throwOnError = false, silent = false) => {
+  const loadDashboard = async (tenantId, throwOnError = false, silent = false, activityRange = overviewActivityRange) => {
     if (!tenantId) return;
     try {
-      const dashboard = await request(`/api/tenant/${tenantId}/dashboard`);
+      const dashboard = await request(`/api/tenant/${tenantId}/dashboard?activity_range=${encodeURIComponent(activityRange)}`);
       const dashboardBookings = dashboard.bookings || [];
       const seenBookingsStorageKey = `carestack-seen-bookings-${tenantId}`;
       let persistedSeenBookingIds;
@@ -364,7 +393,7 @@ function App() {
       if (disposed || inFlight || document.visibilityState !== 'visible') return;
       inFlight = true;
       try {
-        await loadDashboard(tenantId, false, true);
+        await loadDashboard(tenantId, false, true, overviewActivityRange);
       } finally {
         inFlight = false;
       }
@@ -381,7 +410,7 @@ function App() {
       document.removeEventListener('visibilitychange', refreshOverview);
       window.removeEventListener('focus', refreshOverview);
     };
-  }, [page, activeView, session?.tenant_id, session?.role]);
+  }, [page, activeView, session?.tenant_id, session?.role, overviewActivityRange]);
 
   useEffect(() => {
     if (!notificationsOpen) return undefined;
@@ -551,7 +580,7 @@ function App() {
     setError('');
     try {
       if (session.role === 'super_admin') await loadAdminData();
-      else await loadDashboard(session.tenant_id, true);
+      else await loadDashboard(session.tenant_id, true, false, overviewActivityRange);
       setNotice('Workspace data is up to date.');
     } catch (refreshError) {
       setError(refreshError.message || 'Could not refresh workspace data.');
@@ -988,9 +1017,11 @@ function App() {
     const today = new Date().toISOString().slice(0, 10);
     return booking.appointment_date >= today && !['cancelled', 'no_show'].includes(booking.status);
   }).sort((left, right) => `${left.appointment_date} ${left.appointment_time}`.localeCompare(`${right.appointment_date} ${right.appointment_time}`)).slice(0, 5);
+  const activityRangeLabel = overviewActivityRange === 'today' ? 'today' : overviewActivityRange === '30d' ? 'last 30 days' : 'last 7 days';
+  const previousActivityRangeLabel = overviewActivityRange === 'today' ? 'previous day' : overviewActivityRange === '30d' ? 'previous 30 days' : 'previous 7 days';
   const activityComparison = (current = 0, previous = 0) => previous === 0
-    ? `${current} this week · no prior baseline`
-    : `${current - previous > 0 ? '+' : ''}${current - previous} vs prior 7 days`;
+    ? `${current} ${activityRangeLabel} · no prior baseline`
+    : `${current - previous > 0 ? '+' : ''}${current - previous} vs ${previousActivityRangeLabel}`;
 
   const renderTenantOverview = () => (
     <>
@@ -1004,13 +1035,13 @@ function App() {
       </div>
       <div className="row g-4 mb-4">
         <div className="col-12"><section className="tenant-insight-panel">
-          <div className="admin-panel-heading tenant-growth-heading"><div><h3>Clinic growth activity</h3><p>Patient records and appointment bookings created each day · last 7 days</p></div><div className="growth-legend"><span><i className="growth-swatch patient-swatch" />New patients</span><span><i className="growth-swatch booking-swatch" />Bookings</span></div></div>
-          <div className="growth-chart" role="img" aria-label="Daily patient registrations compared with appointment bookings over the last seven days">
+          <div className="admin-panel-heading tenant-growth-heading"><div><h3>Clinic growth activity</h3><p>Patient records and appointment bookings created each day · {activityRangeLabel}</p></div><div className="growth-legend"><span><i className="growth-swatch patient-swatch" />New patients</span><span><i className="growth-swatch booking-swatch" />Bookings</span></div></div>
+          <div className="growth-chart-scroll"><div className="growth-chart" style={{ gridTemplateColumns: `repeat(${analytics.activity.length || 7}, minmax(0, 1fr))`, minWidth: analytics.activity.length > 7 ? `${analytics.activity.length * 28}px` : undefined }} role="img" aria-label={`Daily patient registrations compared with appointment bookings for ${activityRangeLabel}`}>
             {analytics.activity.map((day) => <div className="growth-day" key={day.date} title={`${day.date}: ${day.patients} new patients, ${day.bookings} bookings`}>
               <strong>{day.patients + day.bookings}</strong><div className="growth-track"><span className="growth-bar patient-growth" style={{ height: `${day.patients ? Math.max(7, (day.patients / maxActivityCount) * 100) : 0}%` }} /><span className="growth-bar booking-growth" style={{ height: `${day.bookings ? Math.max(7, (day.bookings / maxActivityCount) * 100) : 0}%` }} /></div><small>{day.label}</small>
             </div>)}
-          </div>
-          <div className="growth-comparison"><span>Patient registrations <strong>{analytics.summary.patient_activity?.current ?? 0}</strong> this 7 days <span className="comparison-divider">vs</span> <strong>{analytics.summary.patient_activity?.previous ?? 0}</strong> prior 7 days</span><span>Bookings created <strong>{analytics.summary.booking_activity?.current ?? 0}</strong> this 7 days <span className="comparison-divider">vs</span> <strong>{analytics.summary.booking_activity?.previous ?? 0}</strong> prior 7 days</span></div>
+          </div></div>
+          <div className="growth-comparison"><span>Patient registrations <strong>{analytics.summary.patient_activity?.current ?? 0}</strong> {activityRangeLabel} <span className="comparison-divider">vs</span> <strong>{analytics.summary.patient_activity?.previous ?? 0}</strong> {previousActivityRangeLabel}</span><span>Bookings created <strong>{analytics.summary.booking_activity?.current ?? 0}</strong> {activityRangeLabel} <span className="comparison-divider">vs</span> <strong>{analytics.summary.booking_activity?.previous ?? 0}</strong> {previousActivityRangeLabel}</span></div>
         </section></div>
       </div>
       <div className="row g-4 mb-4">
@@ -1305,7 +1336,13 @@ function App() {
               <div className="workspace-location"><span className="location-dot" />{superAdmin ? 'CareStack platform' : displayedTenant}<span className="location-divider">/</span><span>{workspaceNavigation.find(([view]) => view === activeView)?.[1]}</span></div>
               <div className="workspace-top-actions">
                 {!superAdmin && <span className="tenant-live-badge"><span />Clinic active</span>}
-                <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''} aria-hidden="true">↻</span><span className="workspace-refresh-label">{refreshing ? 'Updating' : 'Refresh'}</span></button>
+                {!superAdmin && activeView === 'overview' && <label className="workspace-range-filter" title="Filter overview activity by date range">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10m-7 6h4" /></svg>
+                  <span className="visually-hidden">Filter overview activity</span>
+                  <select aria-label="Filter overview activity" value={overviewActivityRange} onChange={(event) => setOverviewActivityRange(event.target.value)}>
+                    <option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option>
+                  </select>
+                </label>}
                 {!superAdmin && activeView === 'overview' && <div className="workspace-notification-wrap" ref={notificationMenuRef}>
                   <button className={`workspace-icon-button workspace-notification-trigger ${notificationsOpen ? 'open' : ''}`} onClick={() => setNotificationsOpen((open) => !open)} aria-label={`Notifications, ${unreadBookingNotifications.length} unread`} aria-expanded={notificationsOpen} aria-haspopup="dialog" title="Booking notifications">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
@@ -1321,6 +1358,7 @@ function App() {
                     <button type="button" className="notification-view-all" onClick={() => { markBookingNotificationsRead(); setNotificationsOpen(false); setActiveView('appointments'); }}>View appointments <span aria-hidden="true">→</span></button>
                   </section>}
                 </div>}
+                <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''} aria-hidden="true">↻</span><span className="workspace-refresh-label">{refreshing ? 'Updating' : 'Refresh'}</span></button>
                 {!superAdmin && <button className="btn btn-primary workspace-new-booking" onClick={() => { setActiveView('appointments'); window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>＋ <span>New appointment</span></button>}
               {superAdmin && activeView === 'tenants' && <button className="btn btn-primary" onClick={() => document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>＋ Add clinic</button>}
                 <div className="workspace-user-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : 'Clinic team')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
@@ -1593,6 +1631,15 @@ function App() {
       </div>
     );
   };
+
+  if (sessionRestoring) {
+    return <div className="workspace-restore-screen" role="status" aria-live="polite">
+      <span className="workspace-restore-mark">C</span>
+      <span className="workspace-restore-spinner" aria-hidden="true" />
+      <strong>Opening your clinic workspace</strong>
+      <small>Restoring your session and dashboard…</small>
+    </div>;
+  }
 
   return (
     <>

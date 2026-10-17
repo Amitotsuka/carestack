@@ -1509,11 +1509,11 @@ class AppService {
     updateAdminPrice(tenant) {
         tenant.monthly_price = this.monthlyRevenueFor(tenant);
     }
-    getDashboard(tenantId) {
+    getDashboard(tenantId, activityRange = '7d') {
         const tenant = this.tenants[tenantId];
         if (!tenant)
             return { statusCode: 404, message: 'Tenant not found' };
-        const analytics = this.getTenantAnalytics(tenant);
+        const analytics = this.getTenantAnalytics(tenant, activityRange);
         return {
             tenant_id: tenant.id,
             tenant_name: tenant.name,
@@ -1540,7 +1540,9 @@ class AppService {
             bookings: tenant.bookings,
         };
     }
-    getTenantAnalytics(tenant) {
+    getTenantAnalytics(tenant, requestedActivityRange = '7d') {
+        const activityRange = ['today', '7d', '30d'].includes(requestedActivityRange) ? requestedActivityRange : '7d';
+        const activityDays = activityRange === 'today' ? 1 : activityRange === '30d' ? 30 : 7;
         const today = new Date();
         today.setUTCHours(0, 0, 0, 0);
         const todayKey = today.toISOString().slice(0, 10);
@@ -1554,24 +1556,24 @@ class AppService {
             count: tenant.bookings.filter((booking) => booking.status === status).length,
         }));
         const activityStart = new Date(today);
-        activityStart.setUTCDate(today.getUTCDate() - 6);
-        const priorStart = new Date(today);
-        priorStart.setUTCDate(today.getUTCDate() - 13);
+        activityStart.setUTCDate(today.getUTCDate() - (activityDays - 1));
+        const priorEnd = new Date(activityStart);
+        priorEnd.setUTCDate(activityStart.getUTCDate() - 1);
+        const priorStart = new Date(priorEnd);
+        priorStart.setUTCDate(priorEnd.getUTCDate() - (activityDays - 1));
         const createdInRange = (createdAt, start, end) => {
             if (!createdAt)
                 return false;
             const createdDate = createdAt.slice(0, 10);
             return createdDate >= start.toISOString().slice(0, 10) && createdDate <= end.toISOString().slice(0, 10);
         };
-        const priorEnd = new Date(activityStart);
-        priorEnd.setUTCDate(activityStart.getUTCDate() - 1);
-        const activity = Array.from({ length: 7 }, (_, index) => {
+        const activity = Array.from({ length: activityDays }, (_, index) => {
             const date = new Date(activityStart);
             date.setUTCDate(activityStart.getUTCDate() + index);
             const dateKey = date.toISOString().slice(0, 10);
             return {
                 date: dateKey,
-                label: new Intl.DateTimeFormat('en-IN', { weekday: 'short', timeZone: 'UTC' }).format(date),
+                label: activityDays === 1 ? 'Today' : activityDays > 7 ? String(date.getUTCDate()) : new Intl.DateTimeFormat('en-IN', { weekday: 'short', timeZone: 'UTC' }).format(date),
                 patients: tenant.patients.filter((patient) => createdInRange(patient.created_at, date, date)).length,
                 bookings: tenant.bookings.filter((booking) => createdInRange(booking.created_at, date, date)).length,
             };
@@ -1608,6 +1610,7 @@ class AppService {
                 patient_activity: patientGrowth,
                 booking_activity: bookingGrowth,
             },
+            activity_range: activityRange,
             activity,
             schedule,
             status_breakdown: statusBreakdown,

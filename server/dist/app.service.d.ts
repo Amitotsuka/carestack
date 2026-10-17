@@ -1445,7 +1445,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
     deleteTenant(tenantId: string): boolean;
     private monthlyRevenueFor;
     private updateAdminPrice;
-    getDashboard(tenantId: string): {
+    getDashboard(tenantId: string, activityRange?: string): {
         statusCode: number;
         message: string;
         tenant_id?: undefined;
@@ -1504,6 +1504,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
                     previous: number;
                 };
             };
+            activity_range: string;
             activity: {
                 date: string;
                 label: string;

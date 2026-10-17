@@ -622,8 +622,8 @@ let AppController = AppController_1 = class AppController {
             throw new common_1.NotFoundException('Tenant not found');
         return { deleted: true, tenant_id: tenantId };
     }
-    getDashboard(tenantId) {
-        const dashboard = this.appService.getDashboard(tenantId);
+    getDashboard(tenantId, activityRange) {
+        const dashboard = this.appService.getDashboard(tenantId, activityRange);
         return dashboard;
     }
     updateVoiceAgent(tenantId, body) {
@@ -965,8 +965,9 @@ __decorate([
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
     (0, access_decorator_1.TenantScoped)(),
     __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Query)('activity_range')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, String]),
     __metadata("design:returntype", void 0)
 ], AppController.prototype, "getDashboard", null);
 __decorate([

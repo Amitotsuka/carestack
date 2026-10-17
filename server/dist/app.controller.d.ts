@@ -1432,7 +1432,7 @@ export declare class AppController {
         deleted: boolean;
         tenant_id: string;
     };
-    getDashboard(tenantId: string): {
+    getDashboard(tenantId: string, activityRange?: string): {
         statusCode: number;
         message: string;
         tenant_id?: undefined;
@@ -1499,6 +1499,7 @@ export declare class AppController {
                     previous: number;
                 };
             };
+            activity_range: string;
             activity: {
                 date: string;
                 label: string;
