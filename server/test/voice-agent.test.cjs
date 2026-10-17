@@ -35,6 +35,7 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   service.tenants = {
     'tenant-skycare': {
       id: 'tenant-skycare', name: 'SkyCare Multi-Speciality', admin_phone: '+919876543210',
+      doctors: ['Dr. Test', 'Dr. Other'].map((name, index) => ({ id: `doc-${index + 1}`, tenant_id: 'tenant-skycare', name, specialty: '', status: 'active' })),
       voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', clinic_context: { doctors: ['Dr. Test', 'Dr. Other'] } },
       telephony: { phone_number: '+919876543211' }, patients: [], bookings: [],
     },
@@ -116,6 +117,7 @@ test('voice tool dispatch accepts direct and supported wrapped arguments and saf
   service.tenants = {
     'tenant-skycare': {
       id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      doctors: [{ id: 'doc-rao', tenant_id: 'tenant-skycare', name: 'Dr. Rao', specialty: '', status: 'active' }],
       voice_agent: {
         enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata',
         clinic_context: { address: '', services: [], fees: '', doctors: ['Dr. Rao'], languages: ['Hindi'], instructions: '', faqs: [{ question: 'Where are you?', answer: 'At the configured clinic address.' }] },
@@ -172,6 +174,9 @@ test('availability accepts the Exotel schema fields and Hinglish dates without i
   service.tenants = {
     'tenant-skycare': {
       id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      doctors: ['Dr. Rao', 'Dr. Mehta'].map((name, index) => ({
+        id: `doc-${index + 1}`, tenant_id: 'tenant-skycare', name, specialty: '', status: 'active',
+      })),
       voice_agent: {
         enabled: true, availability: 'all_day', open_time: '00:00', close_time: '23:59', timezone: 'Asia/Kolkata',
         clinic_context: { doctors: ['Dr. Rao', 'Dr. Mehta'], services: [], faqs: [], languages: ['Hindi', 'English'] },
@@ -221,7 +226,8 @@ test('availability accepts the Exotel schema fields and Hinglish dates without i
   const unknownDoctor = await service.voiceTool('tenant-skycare', {
     action: 'availability', date: 'kal', time: '11 baje', doctor_name: 'Dr. Invented',
   });
-  assert.equal(unknownDoctor.available, false);
+  assert.equal(unknownDoctor.check_status, 'error');
+  assert.equal(unknownDoctor.available, null);
   assert.match(unknownDoctor.message, /not in the clinic doctor list/);
 
   const noDoctorConfigured = {
@@ -232,8 +238,9 @@ test('availability accepts the Exotel schema fields and Hinglish dates without i
   const noDoctor = await service.voiceTool('tenant-empty', {
     action: 'availability', date: 'kal', time: '11 baje', doctor_name: '',
   });
-  assert.equal(noDoctor.available, false);
-  assert.match(noDoctor.message, /No doctors are configured/);
+  assert.equal(noDoctor.check_status, 'error');
+  assert.equal(noDoctor.available, null);
+  assert.match(noDoctor.message, /no doctors are configured/i);
   assert.equal(noDoctor.doctor_name, undefined);
 });
 
@@ -277,6 +284,7 @@ test('voice booking does not report success when appointment persistence fails',
   service.tenants = {
     'tenant-skycare': {
       id: 'tenant-skycare', name: 'SkyCare', admin_phone: '+919876543210', patients: [], bookings: [],
+      doctors: [{ id: 'doc-test', tenant_id: 'tenant-skycare', name: 'Dr. Test', specialty: '', status: 'active' }],
       voice_agent: { enabled: true, availability: 'all_day', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', clinic_context: { doctors: ['Dr. Test'] } },
     },
   };
