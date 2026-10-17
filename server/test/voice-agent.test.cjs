@@ -108,7 +108,7 @@ test('voice tools use tenant calendar, require confirmation, and make retries id
   }
 });
 
-test('voice tool dispatch reads action from the top-level JSON body and safely diagnoses the request shape', async () => {
+test('voice tool dispatch accepts direct and supported wrapped arguments and safely diagnoses the request shape', async () => {
   const { AppService } = require('../dist/app.service.js');
   const { AppController } = require('../dist/app.controller.js');
   const service = Object.create(AppService.prototype);
@@ -129,8 +129,7 @@ test('voice tool dispatch reads action from the top-level JSON body and safely d
   const emittedLogs = [];
   controller.logger = { log: (line) => emittedLogs.push(line) };
 
-  // Exotel must POST action as a top-level JSON body property; URL, headers,
-  // and nested tool argument objects are not treated as the action.
+  // The API accepts direct arguments and known wrapper formats from tool adapters.
   const clinicInfo = await controller.voiceTool('tenant-skycare', secret, { action: 'clinic_info' }, '', '', 'application/json');
   assert.equal(clinicInfo.clinic_name, 'SkyCare');
   const faq = await controller.voiceTool('tenant-skycare', secret, { action: 'faq', question: 'Where are you?' }, '', '', 'application/json');
@@ -152,11 +151,13 @@ test('voice tool dispatch reads action from the top-level JSON body and safely d
   assert.deepEqual(shapeLog.body_field_names, ['action', 'question']);
   assert.doesNotMatch(emittedLogs.join('\n'), /test-master-secret|Sensitive Patient Name|\+919876543210|Consultation/);
 
-  await assert.rejects(
-    controller.voiceTool('tenant-skycare', secret, { arguments: { action: 'clinic_info' } }, '', '', 'application/json'),
-    /Unsupported action/,
-  );
-  await assert.rejects(controller.voiceTool('tenant-skycare', secret, {}, '', '', 'application/json'), /Unsupported action/);
+  const wrappedClinicInfo = await controller.voiceTool('tenant-skycare', secret, { arguments: { action: 'clinic_info' } }, '', '', 'application/json');
+  assert.equal(wrappedClinicInfo.clinic_name, 'SkyCare');
+  const inferredAvailability = await controller.voiceTool('tenant-skycare', secret, {
+    parameters: { date: '2099-04-10', time: '11:30', doctorName: '' },
+  }, '', '', 'application/json');
+  assert.equal(inferredAvailability.available, true);
+  await assert.rejects(controller.voiceTool('tenant-skycare', secret, {}, '', '', 'application/json'), /Could not determine the tool action/);
   await assert.rejects(controller.voiceTool('tenant-skycare', secret, { action: 'appointments' }, '', '', 'application/json'), /Unsupported action/);
   const unsupportedLog = JSON.parse(emittedLogs.at(-1));
   assert.equal(unsupportedLog.received_action, 'unsupported');

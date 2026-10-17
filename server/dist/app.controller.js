@@ -268,6 +268,76 @@ function safeVoiceBodyFieldNames(value, depth = 0) {
             : safeKey;
     });
 }
+const voiceToolFieldAliases = {
+    action: 'action', toolaction: 'action', operation: 'action',
+    date: 'date', appointmentdate: 'date',
+    time: 'time', appointmenttime: 'time',
+    doctorname: 'doctor_name', doctor: 'doctor_name',
+    requestid: 'request_id', confirmed: 'confirmed',
+    patientname: 'patient_name', phonenumber: 'phone_number', patientphone: 'phone_number', phone: 'phone_number',
+    reason: 'reason', question: 'question', query: 'query',
+    toolsecret: 'tool_secret', voicetoolsecret: 'tool_secret', xvoicetoolsecret: 'tool_secret',
+};
+const voiceToolWrapperKeys = new Set(['arguments', 'args', 'parameters', 'params', 'input', 'payload', 'data', 'request', 'toolinput', 'toolarguments']);
+const voiceToolSensitiveContextKeys = new Set(['state', 'messages', 'history', 'conversation', 'context', 'headers']);
+function extractVoiceToolPayload(body) {
+    const values = new Map();
+    const conflicts = new Set();
+    const add = (field, value) => {
+        if (value === undefined || value === null || typeof value === 'object')
+            return;
+        if (values.has(field) && String(values.get(field)).trim() !== String(value).trim())
+            conflicts.add(field);
+        else
+            values.set(field, value);
+    };
+    const visit = (node, depth = 0) => {
+        if (!node || typeof node !== 'object' || depth > 4)
+            return;
+        if (Array.isArray(node)) {
+            for (const entry of node) {
+                if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+                    continue;
+                const item = entry;
+                const name = typeof item.name === 'string' ? item.name
+                    : typeof item.key === 'string' ? item.key
+                        : typeof item.identifier === 'string' ? item.identifier : '';
+                const field = voiceToolFieldAliases[name.toLowerCase().replace(/[^a-z0-9]/g, '')];
+                if (field && Object.prototype.hasOwnProperty.call(item, 'value'))
+                    add(field, item.value);
+            }
+            return;
+        }
+        for (const [key, value] of Object.entries(node)) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const field = voiceToolFieldAliases[normalizedKey];
+            if (field)
+                add(field, value);
+            else if (!voiceToolSensitiveContextKeys.has(normalizedKey) && (depth === 0 || voiceToolWrapperKeys.has(normalizedKey)))
+                visit(value, depth + 1);
+        }
+    };
+    visit(body);
+    const payload = {};
+    for (const [field, value] of values)
+        payload[field] = value;
+    let actionSource = 'explicit';
+    if (typeof payload.action === 'string')
+        payload.action = payload.action.trim().toLowerCase();
+    if (payload.action === undefined) {
+        const bookingFields = ['request_id', 'confirmed', 'patient_name', 'phone_number', 'reason'];
+        if (typeof payload.date === 'string' && payload.date.trim() && typeof payload.time === 'string' && payload.time.trim() &&
+            !bookingFields.some((field) => payload[field] !== undefined)) {
+            payload.action = 'availability';
+            actionSource = 'inferred_from_date_time';
+        }
+        else
+            actionSource = 'missing';
+    }
+    if (payload.action === 'availability' && payload.doctor_name === undefined)
+        payload.doctor_name = '';
+    return { payload, conflicts: [...conflicts], actionSource };
+}
 let AppController = AppController_1 = class AppController {
     constructor(appService, jwtService) {
         this.appService = appService;
@@ -444,7 +514,9 @@ let AppController = AppController_1 = class AppController {
     async voiceTool(tenantId, suppliedSecret, body, authorizationHeader, _tenantHeader, contentType) {
         const started = node_perf_hooks_1.performance.now();
         const traceId = (0, node_crypto_1.randomUUID)();
-        const rawAction = typeof body?.action === 'string' ? body.action.trim().toLowerCase() : '';
+        const extracted = extractVoiceToolPayload(body);
+        const toolPayload = extracted.payload;
+        const rawAction = typeof toolPayload.action === 'string' ? toolPayload.action.trim().toLowerCase() : '';
         const supportedActions = ['clinic_info', 'faq', 'availability', 'book'];
         const actionValue = supportedActions.includes(rawAction) ? rawAction : '';
         const action = actionValue || 'unknown';
@@ -455,15 +527,19 @@ let AppController = AppController_1 = class AppController {
             const authStarted = node_perf_hooks_1.performance.now();
             const authorization = String(authorizationHeader || '').trim();
             const bearerMatch = /^Bearer\s+([^\s]+)$/i.exec(authorization);
-            const bodyCredential = String(body?.tool_secret || body?.['x-voice-tool-secret'] || '').trim();
+            const bodyCredential = String(toolPayload.tool_secret || '').trim();
             const credential = String(suppliedSecret || '').trim() || bearerMatch?.[1] || bodyCredential;
             const authenticated = this.appService.validateVoiceToolSecret(tenantId, credential);
             authenticationMs = node_perf_hooks_1.performance.now() - authStarted;
             if (!authenticated)
                 throw new common_1.UnauthorizedException('Voice tool authentication failed');
-            const toolPayload = body && typeof body === 'object' ? { ...body } : {};
+            if (extracted.conflicts.length) {
+                throw new common_1.BadRequestException(`Conflicting values for voice tool field(s): ${extracted.conflicts.join(', ')}.`);
+            }
             delete toolPayload.tool_secret;
-            delete toolPayload['x-voice-tool-secret'];
+            if (toolPayload.action === undefined) {
+                throw new common_1.BadRequestException('Could not determine the tool action. Send action, or provide both date and time for an availability check.');
+            }
             const dispatchStarted = node_perf_hooks_1.performance.now();
             const result = await this.appService.voiceTool(tenantId, toolPayload);
             dispatchMs = node_perf_hooks_1.performance.now() - dispatchStarted;
@@ -487,7 +563,7 @@ let AppController = AppController_1 = class AppController {
             this.logger.log(JSON.stringify({
                 event: 'voice_tool.request_timing', trace_id: traceId, tenant_id: tenantId, action,
                 received_action: actionValue || (rawAction ? 'unsupported' : null),
-                action_field_present: Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'action')),
+                action_field_present: extracted.actionSource === 'explicit', action_source: extracted.actionSource,
                 content_type: String(contentType || '').slice(0, 100) || null,
                 body_field_names: safeVoiceBodyFieldNames(body),
                 authentication_ms: Number(authenticationMs.toFixed(2)), dispatch_ms: Number(dispatchMs.toFixed(2)),
