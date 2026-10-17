@@ -10,8 +10,18 @@ type Patient = {
     notes?: string;
     created_at?: string;
 };
+type Doctor = {
+    id: string;
+    tenant_id: string;
+    name: string;
+    specialty: string;
+    status: 'active' | 'inactive';
+    created_at: string;
+    updated_at: string;
+};
 type Booking = {
     id: string;
+    patient_id?: string;
     patient_name: string;
     phone_number: string;
     doctor_name: string;
@@ -250,6 +260,15 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         timezone: string;
         appointment_duration_minutes: number;
     };
+    private getActiveDoctorNames;
+    getDoctors(tenantId: string): Doctor[];
+    addDoctor(tenantId: string, payload: any): Promise<Doctor | {
+        error: string;
+    }>;
+    updateDoctor(tenantId: string, doctorId: string, payload: any): Promise<Doctor | {
+        error: string;
+    }>;
+    private syncDoctorNames;
     private timeToMinutes;
     private minutesToTime;
     private appointmentDuration;
@@ -383,11 +402,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -399,6 +421,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -411,11 +434,17 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name: string;
         phone_number: string;
         booking_hours: string;
+        availability_source: string;
         appointment_duration_minutes: number;
         address: any;
         services: any;
         fees: any;
-        doctors: any;
+        doctors: string[];
+        doctor_directory: {
+            name: string;
+            specialty: string;
+        }[];
+        doctor_list_source: string;
         languages: any;
         receptionist_instructions: any;
         faqs: any;
@@ -428,6 +457,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -444,11 +474,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -457,6 +490,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -474,11 +508,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -486,6 +523,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         handoff?: undefined;
         message?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -501,11 +539,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -515,6 +556,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         question?: undefined;
         answer?: undefined;
         source?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -524,7 +566,8 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available: boolean;
+        check_status: string;
+        available: any;
         date: string;
         time: string;
         message: string;
@@ -532,11 +575,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -553,10 +599,15 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available_doctors: string[];
         source: string;
         message: string;
+        available_slots?: {
+            time: string;
+            doctor_names: string[];
+        }[];
+        available_doctors: string[];
         doctor_name: string;
+        check_status: string;
         available: boolean;
         date: string;
         time: string;
@@ -565,11 +616,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -590,11 +644,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -606,6 +663,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         booked?: undefined;
@@ -623,11 +681,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -638,6 +699,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         appointment?: undefined;
         idempotent_replay?: undefined;
         unavailable?: undefined;
@@ -647,11 +709,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -663,6 +728,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -735,11 +801,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -751,6 +820,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -763,11 +833,17 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name: string;
         phone_number: string;
         booking_hours: string;
+        availability_source: string;
         appointment_duration_minutes: number;
         address: any;
         services: any;
         fees: any;
-        doctors: any;
+        doctors: string[];
+        doctor_directory: {
+            name: string;
+            specialty: string;
+        }[];
+        doctor_list_source: string;
         languages: any;
         receptionist_instructions: any;
         faqs: any;
@@ -780,6 +856,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -796,11 +873,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -809,6 +889,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -826,11 +907,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -838,6 +922,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         handoff?: undefined;
         message?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -853,11 +938,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -867,6 +955,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         question?: undefined;
         answer?: undefined;
         source?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -876,7 +965,8 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available: boolean;
+        check_status: string;
+        available: any;
         date: string;
         time: string;
         message: string;
@@ -884,11 +974,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -905,10 +998,15 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available_doctors: string[];
         source: string;
         message: string;
+        available_slots?: {
+            time: string;
+            doctor_names: string[];
+        }[];
+        available_doctors: string[];
         doctor_name: string;
+        check_status: string;
         available: boolean;
         date: string;
         time: string;
@@ -917,11 +1015,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -942,11 +1043,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -958,6 +1062,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         booked?: undefined;
@@ -975,11 +1080,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -990,6 +1098,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         appointment?: undefined;
         idempotent_replay?: undefined;
         unavailable?: undefined;
@@ -999,11 +1108,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1015,6 +1127,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1027,11 +1140,17 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name: string;
         phone_number: string;
         booking_hours: string;
+        availability_source: string;
         appointment_duration_minutes: number;
         address: any;
         services: any;
         fees: any;
-        doctors: any;
+        doctors: string[];
+        doctor_directory: {
+            name: string;
+            specialty: string;
+        }[];
+        doctor_list_source: string;
         languages: any;
         receptionist_instructions: any;
         faqs: any;
@@ -1044,6 +1163,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1061,11 +1181,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1074,6 +1197,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1092,11 +1216,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1104,6 +1231,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         handoff?: undefined;
         message?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1120,11 +1248,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1134,6 +1265,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         question?: undefined;
         answer?: undefined;
         source?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1144,7 +1276,8 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         unavailable?: undefined;
     } | {
         call_sid: string;
-        available: boolean;
+        check_status: string;
+        available: any;
         date: string;
         time: string;
         message: string;
@@ -1152,11 +1285,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1174,10 +1310,15 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         unavailable?: undefined;
     } | {
         call_sid: string;
-        available_doctors: string[];
         source: string;
         message: string;
+        available_slots?: {
+            time: string;
+            doctor_names: string[];
+        }[];
+        available_doctors: string[];
         doctor_name: string;
+        check_status: string;
         available: boolean;
         date: string;
         time: string;
@@ -1186,11 +1327,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1212,11 +1356,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1228,6 +1375,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         booked?: undefined;
@@ -1246,11 +1394,14 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1261,6 +1412,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         appointment?: undefined;
         idempotent_replay?: undefined;
         unavailable?: undefined;
@@ -1283,6 +1435,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         error?: undefined;
     }>;
     private getClinicDoctorCandidates;
+    private getActiveClinicDoctorDirectory;
     private clinicDateParts;
     private dateKey;
     private normalizeVoiceDate;
@@ -1301,6 +1454,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
         plan?: undefined;
         region?: undefined;
         voice_agent?: undefined;
+        doctors?: undefined;
         telephony?: undefined;
         summary?: undefined;
         analytics?: undefined;
@@ -1321,6 +1475,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
             timezone: string;
             appointment_duration_minutes: number;
         };
+        doctors: Doctor[];
         telephony: {
             phone_number: string;
             enabled: boolean;
@@ -1376,6 +1531,7 @@ export declare class AppService implements OnModuleInit, OnModuleDestroy {
     };
     private getTenantAnalytics;
     getPatients(tenantId: string): Patient[];
+    private ensureBookingPatient;
     addBooking(tenantId: string, booking: Booking): Promise<Booking | {
         error: string;
     }>;

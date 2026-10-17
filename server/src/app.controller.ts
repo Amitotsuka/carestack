@@ -1,6 +1,6 @@
 import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min, MinLength } from 'class-validator';
+import { IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { AppService } from './app.service';
@@ -126,6 +126,22 @@ class PatientDto {
   status?: string;
   @IsOptional() @IsString()
   notes?: string;
+}
+
+class DoctorCreateDto {
+  @IsString() @MinLength(2) @MaxLength(120)
+  name: string;
+  @IsOptional() @IsString() @MaxLength(160)
+  specialty?: string;
+}
+
+class DoctorUpdateDto {
+  @IsOptional() @IsString() @MinLength(2) @MaxLength(120)
+  name?: string;
+  @IsOptional() @IsString() @MaxLength(160)
+  specialty?: string;
+  @IsOptional() @IsIn(['active', 'inactive'])
+  status?: string;
 }
 
 class AppointmentStatusDto {
@@ -552,6 +568,35 @@ export class AppController {
     if (settings === null) throw new NotFoundException('Clinic not found');
     if (!settings) throw new BadRequestException('Check clinic hours and timezone. Calling numbers must use international format and cannot be assigned to another clinic.');
     return { voice_agent: settings, message: 'Voice agent settings saved.' };
+  }
+
+  @Get('api/tenant/:tenantId/doctors')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  getDoctors(@Param('tenantId') tenantId: string) {
+    const doctors = this.appService.getDoctors(tenantId);
+    if (!doctors) throw new NotFoundException('Clinic not found');
+    return { doctors };
+  }
+
+  @Post('api/tenant/:tenantId/doctors')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  async addDoctor(@Param('tenantId') tenantId: string, @Body() body: DoctorCreateDto) {
+    const doctor = await this.appService.addDoctor(tenantId, body);
+    if (!doctor) throw new NotFoundException('Clinic not found');
+    if ('error' in doctor) throw new BadRequestException(doctor.error);
+    return { doctor, message: 'Doctor added to clinic roster.' };
+  }
+
+  @Patch('api/tenant/:tenantId/doctors/:doctorId')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  async updateDoctor(@Param('tenantId') tenantId: string, @Param('doctorId') doctorId: string, @Body() body: DoctorUpdateDto) {
+    const doctor = await this.appService.updateDoctor(tenantId, doctorId, body);
+    if (!doctor) throw new NotFoundException('Doctor not found');
+    if ('error' in doctor) throw new BadRequestException(doctor.error);
+    return { doctor, message: 'Doctor roster updated.' };
   }
 
   @Post('api/tenant/:tenantId/voice-agent/preview')

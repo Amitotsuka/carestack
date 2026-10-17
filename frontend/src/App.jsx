@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const PUBLIC_APP_URL = 'https://carestack-uat-web.onrender.com';
 const PUBLIC_API_URL = 'https://carestack-6psq.onrender.com';
@@ -144,6 +144,8 @@ function App() {
   const [editingPlanId, setEditingPlanId] = useState(null);
   const [patientForm, setPatientForm] = useState(emptyPatient);
   const [editingPatientId, setEditingPatientId] = useState(null);
+  const [doctorForm, setDoctorForm] = useState({ name: '', specialty: '' });
+  const [editingDoctorId, setEditingDoctorId] = useState(null);
   const [bookingForm, setBookingForm] = useState(emptyBooking);
   const [tenantForm, setTenantForm] = useState(emptyTenant);
   const [appointmentQuery, setAppointmentQuery] = useState('');
@@ -153,6 +155,9 @@ function App() {
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [seenBookingIds, setSeenBookingIds] = useState([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const notificationMenuRef = useRef(null);
   const [voiceAgent, setVoiceAgent] = useState(defaultVoiceAgent);
   const [clinicCallingNumber, setClinicCallingNumber] = useState('');
   const [telephonyTenantId, setTelephonyTenantId] = useState(null);
@@ -307,21 +312,92 @@ function App() {
     }
   };
 
-  const loadDashboard = async (tenantId, throwOnError = false) => {
+  const loadDashboard = async (tenantId, throwOnError = false, silent = false) => {
     if (!tenantId) return;
     try {
       const dashboard = await request(`/api/tenant/${tenantId}/dashboard`);
+      const dashboardBookings = dashboard.bookings || [];
+      const seenBookingsStorageKey = `carestack-seen-bookings-${tenantId}`;
+      let persistedSeenBookingIds;
+      try {
+        const persisted = localStorage.getItem(seenBookingsStorageKey);
+        if (persisted === null) {
+          // The first visit establishes a baseline so historical bookings do not appear as new alerts.
+          persistedSeenBookingIds = dashboardBookings.map((booking) => String(booking.id));
+          localStorage.setItem(seenBookingsStorageKey, JSON.stringify(persistedSeenBookingIds));
+        } else {
+          const parsed = JSON.parse(persisted);
+          persistedSeenBookingIds = Array.isArray(parsed) ? parsed.map(String) : [];
+        }
+      } catch {
+        persistedSeenBookingIds = [];
+      }
+      setSeenBookingIds(persistedSeenBookingIds);
       setTenantData(dashboard);
       setPatients(dashboard.patients || []);
-      setBookings(dashboard.bookings || []);
-      setVoiceAgent({ ...defaultVoiceAgent, ...(dashboard.voice_agent || {}), clinic_context: { ...defaultVoiceAgent.clinic_context, ...(dashboard.voice_agent?.clinic_context || {}) } });
+      setBookings(dashboardBookings);
+      setVoiceAgent({
+        ...defaultVoiceAgent,
+        ...(dashboard.voice_agent || {}),
+        clinic_context: {
+          ...defaultVoiceAgent.clinic_context,
+          ...(dashboard.voice_agent?.clinic_context || {}),
+          doctors: (dashboard.voice_agent?.clinic_context?.doctors || []).filter((doctor) =>
+            !['na', 'n/a', 'none', 'unknown', 'not available'].includes(String(doctor).trim().toLocaleLowerCase())),
+        },
+      });
       setClinicCallingNumber(dashboard.telephony?.phone_number || '');
       setLastRefreshed(new Date());
     } catch (err) {
-      setError(err.message || 'Dashboard could not be loaded.');
+      if (!silent) setError(err.message || 'Dashboard could not be loaded.');
       if (throwOnError) throw err;
     }
   };
+
+  useEffect(() => {
+    const tenantId = session?.tenant_id;
+    if (page !== 'dashboard' || activeView !== 'overview' || !tenantId || session?.role === 'super_admin') return undefined;
+
+    let disposed = false;
+    let inFlight = false;
+    const refreshOverview = async () => {
+      if (disposed || inFlight || document.visibilityState !== 'visible') return;
+      inFlight = true;
+      try {
+        await loadDashboard(tenantId, false, true);
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    refreshOverview();
+    const intervalId = window.setInterval(refreshOverview, 5000);
+    document.addEventListener('visibilitychange', refreshOverview);
+    window.addEventListener('focus', refreshOverview);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', refreshOverview);
+      window.removeEventListener('focus', refreshOverview);
+    };
+  }, [page, activeView, session?.tenant_id, session?.role]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!notificationMenuRef.current?.contains(event.target)) setNotificationsOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setNotificationsOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [notificationsOpen]);
 
   const saveVoiceAgent = async (event) => {
     event.preventDefault();
@@ -481,6 +557,19 @@ function App() {
       setError(refreshError.message || 'Could not refresh workspace data.');
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const unreadBookingNotifications = bookings.filter((booking) => !seenBookingIds.includes(String(booking.id)));
+  const notificationBookings = [...unreadBookingNotifications]
+    .sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')))
+    .slice(0, 8);
+  const markBookingNotificationsRead = () => {
+    const nextSeenBookingIds = [...new Set([...seenBookingIds, ...bookings.map((booking) => String(booking.id))])];
+    setSeenBookingIds(nextSeenBookingIds);
+    if (session?.tenant_id) {
+      const storageKey = `carestack-seen-bookings-${session.tenant_id}`;
+      try { localStorage.setItem(storageKey, JSON.stringify(nextSeenBookingIds)); } catch { /* Keep the in-memory state usable when storage is unavailable. */ }
     }
   };
 
@@ -717,6 +806,52 @@ function App() {
     }
   };
 
+  const handleDoctorSubmit = async (event) => {
+    event.preventDefault();
+    if (!session?.tenant_id) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const path = `/api/tenant/${session.tenant_id}/doctors${editingDoctorId ? `/${editingDoctorId}` : ''}`;
+      await request(path, {
+        method: editingDoctorId ? 'PATCH' : 'POST',
+        body: JSON.stringify(doctorForm),
+      });
+      setNotice(editingDoctorId ? 'Doctor details updated.' : 'Doctor added to the clinic roster.');
+      setDoctorForm({ name: '', specialty: '' });
+      setEditingDoctorId(null);
+      await loadDashboard(session.tenant_id);
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editDoctor = (doctor) => {
+    setDoctorForm({ name: doctor.name, specialty: doctor.specialty || '' });
+    setEditingDoctorId(doctor.id);
+    setNotice('');
+    setError('');
+  };
+
+  const toggleDoctorStatus = async (doctor) => {
+    if (!session?.tenant_id) return;
+    setError('');
+    setNotice('');
+    try {
+      await request(`/api/tenant/${session.tenant_id}/doctors/${doctor.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: doctor.status === 'active' ? 'inactive' : 'active' }),
+      });
+      setNotice(doctor.status === 'active' ? 'Doctor deactivated; new calls will no longer offer them.' : 'Doctor reactivated for calls and booking.');
+      await loadDashboard(session.tenant_id);
+    } catch (toggleError) {
+      setError(toggleError.message);
+    }
+  };
+
   const editPatient = (patient) => {
     setPatientForm({ ...emptyPatient, ...patient, age: patient.age || '' });
     setEditingPatientId(patient.id);
@@ -848,7 +983,7 @@ function App() {
     return matchesQuery && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
   });
   const displayedPatients = activeView === 'patients' ? filteredPatients : patients.slice(0, 8);
-  const clinicDoctors = [...new Set([...(voiceAgent.clinic_context?.doctors || []), bookingForm.doctor_name].filter(Boolean))];
+  const clinicDoctors = [...new Set([...(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.name), bookingForm.doctor_name].filter(Boolean))];
   const upcomingBookings = bookings.filter((booking) => {
     const today = new Date().toISOString().slice(0, 10);
     return booking.appointment_date >= today && !['cancelled', 'no_show'].includes(booking.status);
@@ -1140,10 +1275,10 @@ function App() {
     if (!session) return null;
     const workspaceNavigation = superAdmin
       ? [['overview', 'Overview', '⌂'], ['leads', 'Clinic requests', '✳'], ['tenants', 'Tenants', '▦'], ['subscriptions', 'Plans & subscriptions', '◈']]
-      : [['overview', 'Overview', '⌂'], ['agents', 'AI receptionist', '◉'], ['patients', 'Patients', '♙'], ['appointments', 'Appointments', '▣'], ['reports', 'Reports', '▥']];
+      : [['overview', 'Overview', '⌂'], ['agents', 'AI receptionist', '◉'], ['doctors', 'Doctors', '✚'], ['patients', 'Patients', '♙'], ['appointments', 'Appointments', '▣'], ['reports', 'Reports', '▥']];
     const pageTitle = superAdmin
       ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic requests' : 'Tenant management'
-      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'patients' ? 'Patient directory' : 'Appointments';
+      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'doctors' ? 'Doctor directory' : activeView === 'patients' ? 'Patient directory' : 'Appointments';
     const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
 
     return (
@@ -1163,7 +1298,6 @@ function App() {
             </nav>
             <div className="sidebar-spacer" />
             <div className="sidebar-help-card"><span className="help-orb">✦</span><strong>Need a hand?</strong><small>Your clinic workspace is ready for today.</small><button onClick={() => { setActiveView(superAdmin ? 'tenants' : 'agents'); }}>Explore workspace <span>→</span></button></div>
-            <div className="workspace-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : 'Clinic team')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
           </aside>
 
           <main className="workspace-main">
@@ -1171,15 +1305,31 @@ function App() {
               <div className="workspace-location"><span className="location-dot" />{superAdmin ? 'CareStack platform' : displayedTenant}<span className="location-divider">/</span><span>{workspaceNavigation.find(([view]) => view === activeView)?.[1]}</span></div>
               <div className="workspace-top-actions">
                 {!superAdmin && <span className="tenant-live-badge"><span />Clinic active</span>}
-                <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''}>↻</span>{refreshing ? 'Updating' : 'Refresh'}</button>
+                <button className="workspace-refresh" onClick={refreshWorkspace} disabled={refreshing} title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh workspace'}><span className={refreshing ? 'refresh-spinning' : ''} aria-hidden="true">↻</span><span className="workspace-refresh-label">{refreshing ? 'Updating' : 'Refresh'}</span></button>
+                {!superAdmin && activeView === 'overview' && <div className="workspace-notification-wrap" ref={notificationMenuRef}>
+                  <button className={`workspace-icon-button workspace-notification-trigger ${notificationsOpen ? 'open' : ''}`} onClick={() => setNotificationsOpen((open) => !open)} aria-label={`Notifications, ${unreadBookingNotifications.length} unread`} aria-expanded={notificationsOpen} aria-haspopup="dialog" title="Booking notifications">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
+                    {unreadBookingNotifications.length > 0 && <span className="workspace-notification-count">{unreadBookingNotifications.length > 99 ? '99+' : unreadBookingNotifications.length}</span>}
+                  </button>
+                  {notificationsOpen && <section className="workspace-notification-popover" role="dialog" aria-label="Booking notifications">
+                    <div className="notification-popover-heading"><div><strong>Notifications</strong><small>{unreadBookingNotifications.length ? `${unreadBookingNotifications.length} new booking${unreadBookingNotifications.length === 1 ? '' : 's'}` : 'You’re all caught up'}</small></div><button type="button" onClick={markBookingNotificationsRead} disabled={!unreadBookingNotifications.length}>Mark all read</button></div>
+                    {notificationBookings.length ? <div className="notification-list">{notificationBookings.map((booking) => <button className="notification-item" key={booking.id} onClick={() => { markBookingNotificationsRead(); setNotificationsOpen(false); setActiveView('appointments'); }}>
+                      <span className="notification-unread-dot" aria-hidden="true" />
+                      <span className="notification-item-copy"><strong>{booking.patient_name || 'New patient booking'}</strong><small>{booking.doctor_name || 'Clinic appointment'} · {booking.appointment_date ? new Date(`${booking.appointment_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : 'Date not set'}{booking.appointment_time ? ` at ${booking.appointment_time}` : ''}</small></span>
+                      <span className="notification-item-arrow" aria-hidden="true">→</span>
+                    </button>)}</div> : <div className="notification-empty"><span aria-hidden="true">✓</span><strong>No new bookings</strong><small>New appointment bookings will appear here.</small></div>}
+                    <button type="button" className="notification-view-all" onClick={() => { markBookingNotificationsRead(); setNotificationsOpen(false); setActiveView('appointments'); }}>View appointments <span aria-hidden="true">→</span></button>
+                  </section>}
+                </div>}
                 {!superAdmin && <button className="btn btn-primary workspace-new-booking" onClick={() => { setActiveView('appointments'); window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>＋ <span>New appointment</span></button>}
               {superAdmin && activeView === 'tenants' && <button className="btn btn-primary" onClick={() => document.getElementById('tenant-management-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>＋ Add clinic</button>}
+                <div className="workspace-user-profile"><span className="profile-avatar">{String(session.name || session.email || 'U').charAt(0).toUpperCase()}</span><span className="profile-copy"><strong>{session.name || (superAdmin ? 'Platform admin' : 'Clinic team')}</strong><small>{session.email}</small></span><button className="profile-logout" onClick={logout} aria-label="Log out" title="Log out">↗</button></div>
               </div>
             </header>
 
             <div className="workspace-content">
               <div className="workspace-page-heading">
-                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}{!superAdmin && activeView === 'overview' ? `, ${String(session.name || 'team').split(' ')[0]}` : ''}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : 'Track clinic activity and export the records your team needs.'}</p></div>
+                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}{!superAdmin && activeView === 'overview' ? `, ${String(session.name || 'team').split(' ')[0]}` : ''}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'doctors' ? 'Manage the clinic roster used by availability checks and the voice agent.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : 'Track clinic activity and export the records your team needs.'}</p></div>
               </div>
 
               {(notice || error) && <div className={`alert ${error ? 'alert-danger' : 'alert-success'} alert-dismissible`} role="status">
@@ -1206,7 +1356,7 @@ function App() {
                     <div className="col-md-6"><label className="form-label" htmlFor="agent-address">Clinic address</label><textarea id="agent-address" className="form-control" rows="2" maxLength="500" value={context.address || ''} onChange={(event) => update('address', event.target.value)} placeholder="Full address and nearby landmark" /></div>
                     <div className="col-md-6"><label className="form-label" htmlFor="agent-languages">Languages (comma separated)</label><input id="agent-languages" className="form-control" value={(context.languages || []).join(', ')} onChange={(event) => update('languages', event.target.value.split(',').map((item) => item.trim()).filter(Boolean))} placeholder="Hindi, Hinglish, English" /></div>
                     <div className="col-md-6"><label className="form-label" htmlFor="agent-services">Services (one per line)</label><textarea id="agent-services" className="form-control" rows="3" value={(context.services || []).join('\n')} onChange={(event) => update('services', event.target.value.split('\n').map((item) => item.trim()).filter(Boolean))} placeholder="General consultation\nDental care" /></div>
-                    <div className="col-md-6"><label className="form-label" htmlFor="agent-doctors">Verified clinic doctors (one per line)</label><textarea id="agent-doctors" className="form-control" rows="4" value={(context.doctors || []).join('\n')} onChange={(event) => update('doctors', event.target.value.split('\n').map((item) => item.trim()).filter(Boolean))} placeholder="Enter the clinic’s verified doctor names" /><small className="text-muted">Only names configured here are returned to the calling agent. Past appointment records are not a reliable doctor directory. External CareStack doctor sync is not connected yet.</small></div>
+                    <div className="col-md-6"><label className="form-label" htmlFor="agent-doctors">Doctors and specialties (one per line)</label><textarea id="agent-doctors" className="form-control" rows="4" readOnly value={(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.specialty ? `${doctor.name} — ${doctor.specialty}` : doctor.name).join('\n')} placeholder="Add doctors in the Doctors section" /><small className="text-muted">This read-only list syncs from the clinic database doctor roster.</small><button type="button" className="btn btn-sm btn-outline-primary mt-2" onClick={() => setActiveView('doctors')}>Manage clinic doctors</button></div>
                     <div className="col-md-6"><label className="form-label" htmlFor="agent-fees">Fees and payment information</label><textarea id="agent-fees" className="form-control" rows="3" maxLength="2000" value={context.fees || ''} onChange={(event) => update('fees', event.target.value)} placeholder="Consultation fee, accepted payment methods, insurance notes" /></div>
                     <div className="col-md-6"><label className="form-label" htmlFor="agent-instructions">Receptionist instructions</label><textarea id="agent-instructions" className="form-control" rows="3" maxLength="4000" value={context.instructions || ''} onChange={(event) => update('instructions', event.target.value)} placeholder="For example: ask patients to arrive 15 minutes early." /></div>
                     <div className="col-12"><h5 className="mb-1">Frequently asked questions</h5><p className="small text-muted">Save exact answers approved by your clinic. Leave unused rows blank.</p>{faqs.map((faq, index) => <div className="row g-2 mb-2" key={index}><div className="col-md-5"><label className="visually-hidden" htmlFor={`agent-faq-q-${index}`}>Question {index + 1}</label><input id={`agent-faq-q-${index}`} className="form-control" maxLength="300" value={faq.question} placeholder={`Question ${index + 1}`} onChange={(event) => { faqs[index] = { ...faq, question: event.target.value }; update('faqs', faqs); }} /></div><div className="col-md-7"><label className="visually-hidden" htmlFor={`agent-faq-a-${index}`}>Approved answer {index + 1}</label><input id={`agent-faq-a-${index}`} className="form-control" maxLength="1200" value={faq.answer} placeholder="Clinic-approved answer" onChange={(event) => { faqs[index] = { ...faq, answer: event.target.value }; update('faqs', faqs); }} /></div></div>)}<button type="button" className="btn btn-sm btn-outline-primary" onClick={() => update('faqs', [...faqs, { question: '', answer: '' }])} disabled={faqs.length >= 25}>Add FAQ</button></div>
@@ -1307,6 +1457,27 @@ function App() {
                   </form>
                   </div>
                 </div>
+              </div>}
+
+              {!superAdmin && activeView === 'doctors' && <div className="row g-4 mb-4">
+                <div className="col-lg-4"><div className="card border-0 shadow-sm rounded-4 h-100"><div className="card-body">
+                  <h4 className="mb-1">{editingDoctorId ? 'Edit doctor' : 'Add clinic doctor'}</h4>
+                  <p className="text-muted small">Active doctors appear in the AI receptionist and appointment availability checks.</p>
+                  <form onSubmit={handleDoctorSubmit}>
+                    <label className="form-label" htmlFor="doctor-name">Doctor name</label>
+                    <input id="doctor-name" className="form-control mb-3" required minLength="2" maxLength="120" value={doctorForm.name} onChange={(event) => setDoctorForm({ ...doctorForm, name: event.target.value })} placeholder="Dr. Anjali Sharma" />
+                    <label className="form-label" htmlFor="doctor-specialty">Specialty</label>
+                    <input id="doctor-specialty" className="form-control" maxLength="160" value={doctorForm.specialty} onChange={(event) => setDoctorForm({ ...doctorForm, specialty: event.target.value })} placeholder="General medicine" />
+                    <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{editingDoctorId ? 'Save doctor' : 'Add doctor'}</button>{editingDoctorId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setDoctorForm({ name: '', specialty: '' }); setEditingDoctorId(null); }}>Cancel</button>}</div>
+                  </form>
+                </div></div></div>
+                <div className="col-lg-8"><div className="card border-0 shadow-sm rounded-4 h-100"><div className="card-body">
+                  <div className="d-flex justify-content-between align-items-center gap-3 mb-3"><div><h4 className="mb-1">Clinic doctor roster</h4><p className="small text-muted mb-0">{(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').length} active · saved in this clinic database</p></div></div>
+                  {(tenantData?.doctors || []).length ? <div className="list-group list-group-flush">{tenantData.doctors.map((doctor) => <div className="list-group-item px-0 d-flex justify-content-between align-items-center gap-3" key={doctor.id}>
+                    <div><strong>{doctor.name}</strong>{doctor.specialty && <span className="text-muted"> · {doctor.specialty}</span>}<small className="d-block"><span className={`status-pill ${doctor.status === 'active' ? 'confirmed' : 'cancelled'}`}>{doctor.status}</span></small></div>
+                    <div className="d-flex gap-2"><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => editDoctor(doctor)}>Edit</button><button type="button" className={`btn btn-sm ${doctor.status === 'active' ? 'btn-outline-danger' : 'btn-outline-success'}`} onClick={() => toggleDoctorStatus(doctor)}>{doctor.status === 'active' ? 'Deactivate' : 'Reactivate'}</button></div>
+                  </div>)}</div> : <div className="empty-insight">No doctors added yet. Add your clinic’s verified doctors to enable real availability checks and voice bookings.</div>}
+                </div></div></div>
               </div>}
 
               {!superAdmin && activeView === 'patients' && <div className="card border-0 shadow-sm rounded-4 mb-4">

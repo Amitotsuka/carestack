@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
@@ -28,8 +28,19 @@ type Patient = {
   created_at?: string;
 };
 
+type Doctor = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  specialty: string;
+  status: 'active' | 'inactive';
+  created_at: string;
+  updated_at: string;
+};
+
 type Booking = {
   id: string;
+  patient_id?: string;
   patient_name: string;
   phone_number: string;
   doctor_name: string;
@@ -80,6 +91,7 @@ type Tenant = {
   users: TenantUser[];
   patients: Patient[];
   bookings: Booking[];
+  doctors?: Doctor[];
   exotel_calls?: ExotelCall[];
   voice_agent: { enabled: boolean; availability: 'all_day' | 'business_hours'; open_time: string; close_time: string; timezone: string; appointment_duration_minutes?: number; clinic_context?: any };
   telephony?: {
@@ -204,6 +216,30 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         delete (tenant.voice_agent as any).calling_number;
         migrated = true;
       }
+      if (!Array.isArray(tenant.doctors)) {
+        const legacyDoctors = tenant.voice_agent?.clinic_context?.doctors || [];
+        const seen = new Set<string>();
+        tenant.doctors = legacyDoctors.flatMap((entry: unknown, index: number) => {
+          const value = String(entry || '').trim();
+          if (!value || ['na', 'n/a', 'none', 'unknown', 'not available'].includes(value.toLocaleLowerCase())) return [];
+          const parts = value.split(/\s+[—–-]\s+/, 2);
+          const name = parts[0].trim();
+          const specialty = parts[1]?.trim() || '';
+          const key = name.toLocaleLowerCase();
+          if (seen.has(key)) return [];
+          seen.add(key);
+          const now = new Date().toISOString();
+          return [{ id: `doc-legacy-${index + 1}`, tenant_id: tenant.id, name, specialty, status: 'active' as const, created_at: now, updated_at: now }];
+        });
+        migrated = true;
+      }
+      const syncedDoctors = (tenant.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.name);
+      tenant.voice_agent ||= { ...defaultVoiceAgent };
+      tenant.voice_agent.clinic_context ||= { ...defaultClinicContext };
+      if (JSON.stringify(tenant.voice_agent.clinic_context.doctors || []) !== JSON.stringify(syncedDoctors)) {
+        tenant.voice_agent.clinic_context.doctors = syncedDoctors;
+        migrated = true;
+      }
       tenant.users.forEach((user) => {
       const legacyUser = user as TenantUser & { password?: string };
       if (!legacyUser.password_hash && legacyUser.password) {
@@ -311,6 +347,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           created_at: '2026-10-14T08:00:00.000Z',
         },
       ],
+      doctors: [],
       bookings: [
         {
           id: 'APT-0001',
@@ -524,6 +561,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       ],
       patients: [],
       bookings: [],
+      doctors: [],
       voice_agent: { ...defaultVoiceAgent },
       telephony: { ...defaultTelephony },
     };
@@ -618,7 +656,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const cleanList = (value: any, limit: number) => Array.isArray(value) ? value.slice(0, 30).map((item) => boundedText(item, limit)).filter(Boolean) : [];
     const faqs = Array.isArray(context.faqs) ? context.faqs.slice(0, 25).map((item: any) => ({ question: boundedText(item?.question, 300), answer: boundedText(item?.answer, 1200) })).filter((item: any) => item.question && item.answer) : [];
     next.clinic_context = {
-      address: boundedText(context.address, 500), services: cleanList(context.services, 160), doctors: cleanList(context.doctors, 160),
+      address: boundedText(context.address, 500), services: cleanList(context.services, 160), doctors: this.getActiveDoctorNames(tenantId),
       fees: boundedText(context.fees, 2000), languages: cleanList(context.languages, 40).slice(0, 8),
       instructions: boundedText(context.instructions, 4000), faqs,
     };
@@ -629,7 +667,88 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   getVoiceAgent(tenantId: string) {
     const stored = this.tenants[tenantId]?.voice_agent;
-    return { ...defaultVoiceAgent, ...(stored || {}), clinic_context: { ...defaultClinicContext, ...(stored?.clinic_context || {}) } };
+    return {
+      ...defaultVoiceAgent,
+      ...(stored || {}),
+      clinic_context: {
+        ...defaultClinicContext,
+        ...(stored?.clinic_context || {}),
+        doctors: this.getActiveDoctorNames(tenantId),
+      },
+    };
+  }
+
+  private getActiveDoctorNames(tenantId: string) {
+    return (this.tenants[tenantId]?.doctors || [])
+      .filter((doctor) => doctor.status === 'active')
+      .map((doctor) => doctor.name);
+  }
+
+  getDoctors(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    tenant.doctors ||= [];
+    return [...tenant.doctors].sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async addDoctor(tenantId: string, payload: any) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    tenant.doctors ||= [];
+    const name = String(payload?.name || '').trim();
+    const specialty = String(payload?.specialty || '').trim();
+    if (name.length < 2 || name.length > 120) return { error: 'Doctor name must be between 2 and 120 characters.' };
+    if (specialty.length > 160) return { error: 'Specialty must be 160 characters or fewer.' };
+    if (['na', 'n/a', 'none', 'unknown', 'not available'].includes(name.toLocaleLowerCase())) return { error: 'Enter a real doctor name.' };
+    if (tenant.doctors.some((doctor) => doctor.name.toLocaleLowerCase() === name.toLocaleLowerCase())) return { error: 'This doctor is already in the clinic roster.' };
+
+    const now = new Date().toISOString();
+    const doctor: Doctor = { id: `doc-${randomUUID()}`, tenant_id: tenantId, name, specialty, status: 'active', created_at: now, updated_at: now };
+    tenant.doctors.push(doctor);
+    this.syncDoctorNames(tenantId);
+    try {
+      this.persistState();
+      await this.waitForPendingPersistence();
+    } catch (error) {
+      tenant.doctors = tenant.doctors.filter((item) => item.id !== doctor.id);
+      this.syncDoctorNames(tenantId);
+      throw error;
+    }
+    return doctor;
+  }
+
+  async updateDoctor(tenantId: string, doctorId: string, payload: any) {
+    const tenant = this.tenants[tenantId];
+    const doctor = tenant?.doctors?.find((item) => item.id === doctorId);
+    if (!tenant || !doctor) return null;
+    const previous = { ...doctor };
+    const name = payload?.name === undefined ? doctor.name : String(payload.name).trim();
+    const specialty = payload?.specialty === undefined ? doctor.specialty : String(payload.specialty || '').trim();
+    const status = payload?.status === undefined ? doctor.status : payload.status;
+    if (name.length < 2 || name.length > 120) return { error: 'Doctor name must be between 2 and 120 characters.' };
+    if (specialty.length > 160) return { error: 'Specialty must be 160 characters or fewer.' };
+    if (!['active', 'inactive'].includes(status)) return { error: 'Doctor status must be active or inactive.' };
+    if (tenant.doctors!.some((item) => item.id !== doctorId && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) return { error: 'This doctor is already in the clinic roster.' };
+
+    Object.assign(doctor, { name, specialty, status, updated_at: new Date().toISOString() });
+    this.syncDoctorNames(tenantId);
+    try {
+      this.persistState();
+      await this.waitForPendingPersistence();
+    } catch (error) {
+      Object.assign(doctor, previous);
+      this.syncDoctorNames(tenantId);
+      throw error;
+    }
+    return doctor;
+  }
+
+  private syncDoctorNames(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return;
+    tenant.voice_agent ||= { ...defaultVoiceAgent };
+    tenant.voice_agent.clinic_context ||= { ...defaultClinicContext };
+    tenant.voice_agent.clinic_context.doctors = this.getActiveDoctorNames(tenantId);
   }
 
   private timeToMinutes(value: string) {
@@ -945,7 +1064,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         availability_source: 'portal appointment calendar',
         appointment_duration_minutes: this.appointmentDuration(tenantId),
         address: context.address || null, services: context.services, fees: context.fees || null, doctors: this.getClinicDoctorCandidates(tenantId),
-        doctor_list_source: 'clinic configuration',
+        doctor_directory: this.getActiveClinicDoctorDirectory(tenantId),
+        doctor_list_source: 'clinic database roster',
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
         response_policy: 'Only values returned here are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. If the caller has no doctor preference, check availability without doctor_name, tell the caller the returned available doctor, and obtain confirmation of the complete booking details before booking. Offer a human receptionist for other clinic questions.',
       };
@@ -1294,13 +1414,13 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getClinicDoctorCandidates(tenantId: string) {
-    const configured = this.getVoiceAgent(tenantId).clinic_context?.doctors || [];
-    const names = configured
-      .map((name: unknown) => String(name || '').trim())
-      .filter(Boolean);
-    const unique = new Map<string, string>();
-    for (const name of names) if (!unique.has(name.toLocaleLowerCase())) unique.set(name.toLocaleLowerCase(), name);
-    return [...unique.values()];
+    return this.getActiveDoctorNames(tenantId);
+  }
+
+  private getActiveClinicDoctorDirectory(tenantId: string) {
+    return (this.tenants[tenantId]?.doctors || [])
+      .filter((doctor) => doctor.status === 'active')
+      .map(({ name, specialty }) => ({ name, specialty }));
   }
 
   private clinicDateParts(tenantId: string, date = new Date()) {
@@ -1426,6 +1546,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       plan: tenant.plan,
       region: tenant.region,
       voice_agent: this.getVoiceAgent(tenantId),
+      doctors: this.getDoctors(tenantId) || [],
       telephony: {
         phone_number: tenant.telephony?.phone_number || '',
         enabled: tenant.telephony?.enabled || false,
@@ -1526,6 +1647,36 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     return this.tenants[tenantId]?.patients || [];
   }
 
+  private ensureBookingPatient(tenant: Tenant, booking: Booking) {
+    tenant.patients ||= [];
+    const name = String(booking.patient_name || '').trim();
+    const phone = String(booking.phone_number || '').trim();
+    if (!name || !phone) return { patient: null, created: false };
+
+    const normalizeName = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+    const normalizePhone = (value: string) => {
+      const digits = value.replace(/\D/g, '');
+      return digits.replace(/^0091(?=\d{10}$)/, '').replace(/^91(?=\d{10}$)/, '');
+    };
+    const patient = tenant.patients.find((item) =>
+      normalizeName(item.name) === normalizeName(name) && normalizePhone(item.phone) === normalizePhone(phone));
+    if (patient) return { patient, created: false };
+
+    const usedIds = new Set(tenant.patients.map((item) => item.id));
+    let nextId = tenant.patients.length + 1001;
+    while (usedIds.has(`pat-${nextId}`)) nextId += 1;
+    const createdPatient: Patient = {
+      id: `pat-${nextId}`,
+      tenant_id: tenant.id,
+      name,
+      phone,
+      status: 'active',
+      created_at: new Date().toISOString(),
+    };
+    tenant.patients.push(createdPatient);
+    return { patient: createdPatient, created: true };
+  }
+
   async addBooking(tenantId: string, booking: Booking) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return null;
@@ -1535,7 +1686,24 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
     const existing = tenant.bookings.find((item) => item.id === booking.id);
     if (existing) {
-      await this.waitForPendingPersistence();
+      const registration = this.ensureBookingPatient(tenant, existing);
+      const patientLinkChanged = Boolean(registration.patient && !existing.patient_id);
+      const previousPatientId = existing.patient_id;
+      if (patientLinkChanged && registration.patient) existing.patient_id = registration.patient.id;
+      if (registration.created || patientLinkChanged) {
+        try {
+          this.persistState();
+          await this.waitForPendingPersistence();
+        } catch (error) {
+          existing.patient_id = previousPatientId;
+          if (registration.created && registration.patient) {
+            tenant.patients = tenant.patients.filter((item) => item.id !== registration.patient!.id);
+          }
+          throw error;
+        }
+      } else {
+        await this.waitForPendingPersistence();
+      }
       return existing;
     }
 
@@ -1543,7 +1711,13 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const conflict = this.findScheduleConflict(tenantId, booking.appointment_date, booking.appointment_time, booking.doctor_name, duration);
     if (conflict) return { error: this.scheduleConflictMessage(tenantId, conflict) };
 
-    const savedBooking = { ...booking, duration_minutes: duration, created_at: booking.created_at || new Date().toISOString() };
+    const registration = this.ensureBookingPatient(tenant, booking);
+    const savedBooking = {
+      ...booking,
+      ...(registration.patient ? { patient_id: registration.patient.id } : {}),
+      duration_minutes: duration,
+      created_at: booking.created_at || new Date().toISOString(),
+    };
     tenant.bookings.push(savedBooking);
     try {
       this.persistState();
@@ -1551,6 +1725,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const index = tenant.bookings.findIndex((item) => item.id === savedBooking.id);
       if (index !== -1) tenant.bookings.splice(index, 1);
+      if (registration.created && registration.patient) {
+        tenant.patients = tenant.patients.filter((item) => item.id !== registration.patient!.id);
+      }
       throw error;
     }
     return savedBooking;

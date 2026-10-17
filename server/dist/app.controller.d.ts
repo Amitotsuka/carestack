@@ -57,6 +57,15 @@ declare class PatientDto {
     status?: string;
     notes?: string;
 }
+declare class DoctorCreateDto {
+    name: string;
+    specialty?: string;
+}
+declare class DoctorUpdateDto {
+    name?: string;
+    specialty?: string;
+    status?: string;
+}
 declare class AppointmentStatusDto {
     status: string;
 }
@@ -495,11 +504,17 @@ export declare class AppController {
         clinic_name: string;
         phone_number: string;
         booking_hours: string;
+        availability_source: string;
         appointment_duration_minutes: number;
         address: any;
         services: any;
         fees: any;
-        doctors: any;
+        doctors: string[];
+        doctor_directory: {
+            name: string;
+            specialty: string;
+        }[];
+        doctor_list_source: string;
         languages: any;
         receptionist_instructions: any;
         faqs: any;
@@ -512,6 +527,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -528,11 +544,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -541,6 +560,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -558,11 +578,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -570,6 +593,7 @@ export declare class AppController {
         handoff?: undefined;
         message?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -585,11 +609,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -599,6 +626,7 @@ export declare class AppController {
         question?: undefined;
         answer?: undefined;
         source?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -608,7 +636,8 @@ export declare class AppController {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available: boolean;
+        check_status: string;
+        available: any;
         date: string;
         time: string;
         message: string;
@@ -616,11 +645,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -637,10 +669,15 @@ export declare class AppController {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available_doctors: string[];
         source: string;
         message: string;
+        available_slots?: {
+            time: string;
+            doctor_names: string[];
+        }[];
+        available_doctors: string[];
         doctor_name: string;
+        check_status: string;
         available: boolean;
         date: string;
         time: string;
@@ -649,11 +686,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -670,6 +710,7 @@ export declare class AppController {
     } | {
         appointment: {
             id: string;
+            patient_id?: string;
             patient_name: string;
             phone_number: string;
             doctor_name: string;
@@ -685,11 +726,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -701,6 +745,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         booked?: undefined;
@@ -718,11 +763,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -733,6 +781,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         appointment?: undefined;
         idempotent_replay?: undefined;
         unavailable?: undefined;
@@ -741,11 +790,17 @@ export declare class AppController {
         clinic_name: string;
         phone_number: string;
         booking_hours: string;
+        availability_source: string;
         appointment_duration_minutes: number;
         address: any;
         services: any;
         fees: any;
-        doctors: any;
+        doctors: string[];
+        doctor_directory: {
+            name: string;
+            specialty: string;
+        }[];
+        doctor_list_source: string;
         languages: any;
         receptionist_instructions: any;
         faqs: any;
@@ -758,6 +813,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -775,11 +831,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -788,6 +847,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -806,11 +866,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -818,6 +881,7 @@ export declare class AppController {
         handoff?: undefined;
         message?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -834,11 +898,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -848,6 +915,7 @@ export declare class AppController {
         question?: undefined;
         answer?: undefined;
         source?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -858,7 +926,8 @@ export declare class AppController {
         unavailable?: undefined;
     } | {
         call_sid: string;
-        available: boolean;
+        check_status: string;
+        available: any;
         date: string;
         time: string;
         message: string;
@@ -866,11 +935,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -888,10 +960,15 @@ export declare class AppController {
         unavailable?: undefined;
     } | {
         call_sid: string;
-        available_doctors: string[];
         source: string;
         message: string;
+        available_slots?: {
+            time: string;
+            doctor_names: string[];
+        }[];
+        available_doctors: string[];
         doctor_name: string;
+        check_status: string;
         available: boolean;
         date: string;
         time: string;
@@ -900,11 +977,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -922,6 +1002,7 @@ export declare class AppController {
         call_sid: string;
         appointment: {
             id: string;
+            patient_id?: string;
             patient_name: string;
             phone_number: string;
             doctor_name: string;
@@ -937,11 +1018,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -953,6 +1037,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         booked?: undefined;
@@ -971,11 +1056,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -986,6 +1074,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         appointment?: undefined;
         idempotent_replay?: undefined;
         unavailable?: undefined;
@@ -994,11 +1083,17 @@ export declare class AppController {
         clinic_name: string;
         phone_number: string;
         booking_hours: string;
+        availability_source: string;
         appointment_duration_minutes: number;
         address: any;
         services: any;
         fees: any;
-        doctors: any;
+        doctors: string[];
+        doctor_directory: {
+            name: string;
+            specialty: string;
+        }[];
+        doctor_list_source: string;
         languages: any;
         receptionist_instructions: any;
         faqs: any;
@@ -1011,6 +1106,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1027,11 +1123,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1040,6 +1139,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1057,11 +1157,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1069,6 +1172,7 @@ export declare class AppController {
         handoff?: undefined;
         message?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1084,11 +1188,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1098,6 +1205,7 @@ export declare class AppController {
         question?: undefined;
         answer?: undefined;
         source?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         appointment?: undefined;
@@ -1107,7 +1215,8 @@ export declare class AppController {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available: boolean;
+        check_status: string;
+        available: any;
         date: string;
         time: string;
         message: string;
@@ -1115,11 +1224,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1136,10 +1248,15 @@ export declare class AppController {
         doctor_name?: undefined;
         unavailable?: undefined;
     } | {
-        available_doctors: string[];
         source: string;
         message: string;
+        available_slots?: {
+            time: string;
+            doctor_names: string[];
+        }[];
+        available_doctors: string[];
         doctor_name: string;
+        check_status: string;
         available: boolean;
         date: string;
         time: string;
@@ -1148,11 +1265,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1169,6 +1289,7 @@ export declare class AppController {
     } | {
         appointment: {
             id: string;
+            patient_id?: string;
             patient_name: string;
             phone_number: string;
             doctor_name: string;
@@ -1184,11 +1305,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1200,6 +1324,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         date?: undefined;
         time?: undefined;
         booked?: undefined;
@@ -1217,11 +1342,14 @@ export declare class AppController {
         clinic_name?: undefined;
         phone_number?: undefined;
         booking_hours?: undefined;
+        availability_source?: undefined;
         appointment_duration_minutes?: undefined;
         address?: undefined;
         services?: undefined;
         fees?: undefined;
         doctors?: undefined;
+        doctor_directory?: undefined;
+        doctor_list_source?: undefined;
         languages?: undefined;
         receptionist_instructions?: undefined;
         faqs?: undefined;
@@ -1232,6 +1360,7 @@ export declare class AppController {
         answer?: undefined;
         source?: undefined;
         available?: undefined;
+        check_status?: undefined;
         appointment?: undefined;
         idempotent_replay?: undefined;
         unavailable?: undefined;
@@ -1312,6 +1441,7 @@ export declare class AppController {
         plan?: undefined;
         region?: undefined;
         voice_agent?: undefined;
+        doctors?: undefined;
         telephony?: undefined;
         summary?: undefined;
         analytics?: undefined;
@@ -1332,6 +1462,15 @@ export declare class AppController {
             timezone: string;
             appointment_duration_minutes: number;
         };
+        doctors: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            specialty: string;
+            status: "active" | "inactive";
+            created_at: string;
+            updated_at: string;
+        }[];
         telephony: {
             phone_number: string;
             enabled: boolean;
@@ -1393,6 +1532,7 @@ export declare class AppController {
         }[];
         bookings: {
             id: string;
+            patient_id?: string;
             patient_name: string;
             phone_number: string;
             doctor_name: string;
@@ -1418,6 +1558,41 @@ export declare class AppController {
         };
         message: string;
     };
+    getDoctors(tenantId: string): {
+        doctors: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            specialty: string;
+            status: "active" | "inactive";
+            created_at: string;
+            updated_at: string;
+        }[];
+    };
+    addDoctor(tenantId: string, body: DoctorCreateDto): Promise<{
+        doctor: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            specialty: string;
+            status: "active" | "inactive";
+            created_at: string;
+            updated_at: string;
+        };
+        message: string;
+    }>;
+    updateDoctor(tenantId: string, doctorId: string, body: DoctorUpdateDto): Promise<{
+        doctor: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            specialty: string;
+            status: "active" | "inactive";
+            created_at: string;
+            updated_at: string;
+        };
+        message: string;
+    }>;
     previewVoiceAgent(tenantId: string, body: any): {
         reply: any;
         status: string;
@@ -1483,6 +1658,7 @@ export declare class AppController {
     updateAppointmentStatus(tenantId: string, appointmentId: string, body: AppointmentStatusDto): {
         appointment: {
             id: string;
+            patient_id?: string;
             patient_name: string;
             phone_number: string;
             doctor_name: string;
@@ -1500,6 +1676,7 @@ export declare class AppController {
         data: any;
         appointment: {
             id: string;
+            patient_id?: string;
             patient_name: string;
             phone_number: string;
             doctor_name: string;

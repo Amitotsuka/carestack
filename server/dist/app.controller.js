@@ -251,6 +251,40 @@ __decorate([
     (0, class_validator_1.IsString)(),
     __metadata("design:type", String)
 ], PatientDto.prototype, "notes", void 0);
+class DoctorCreateDto {
+}
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], DoctorCreateDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(160),
+    __metadata("design:type", String)
+], DoctorCreateDto.prototype, "specialty", void 0);
+class DoctorUpdateDto {
+}
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(2),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], DoctorUpdateDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(160),
+    __metadata("design:type", String)
+], DoctorUpdateDto.prototype, "specialty", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsIn)(['active', 'inactive']),
+    __metadata("design:type", String)
+], DoctorUpdateDto.prototype, "status", void 0);
 class AppointmentStatusDto {
 }
 __decorate([
@@ -600,6 +634,28 @@ let AppController = AppController_1 = class AppController {
             throw new common_1.BadRequestException('Check clinic hours and timezone. Calling numbers must use international format and cannot be assigned to another clinic.');
         return { voice_agent: settings, message: 'Voice agent settings saved.' };
     }
+    getDoctors(tenantId) {
+        const doctors = this.appService.getDoctors(tenantId);
+        if (!doctors)
+            throw new common_1.NotFoundException('Clinic not found');
+        return { doctors };
+    }
+    async addDoctor(tenantId, body) {
+        const doctor = await this.appService.addDoctor(tenantId, body);
+        if (!doctor)
+            throw new common_1.NotFoundException('Clinic not found');
+        if ('error' in doctor)
+            throw new common_1.BadRequestException(doctor.error);
+        return { doctor, message: 'Doctor added to clinic roster.' };
+    }
+    async updateDoctor(tenantId, doctorId, body) {
+        const doctor = await this.appService.updateDoctor(tenantId, doctorId, body);
+        if (!doctor)
+            throw new common_1.NotFoundException('Doctor not found');
+        if ('error' in doctor)
+            throw new common_1.BadRequestException(doctor.error);
+        return { doctor, message: 'Doctor roster updated.' };
+    }
     previewVoiceAgent(tenantId, body) {
         const preview = this.appService.previewVoiceAgent(tenantId, String(body?.caller_message || ''));
         if (!preview)
@@ -923,6 +979,36 @@ __decorate([
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], AppController.prototype, "updateVoiceAgent", null);
+__decorate([
+    (0, common_1.Get)('api/tenant/:tenantId/doctors'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], AppController.prototype, "getDoctors", null);
+__decorate([
+    (0, common_1.Post)('api/tenant/:tenantId/doctors'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, DoctorCreateDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "addDoctor", null);
+__decorate([
+    (0, common_1.Patch)('api/tenant/:tenantId/doctors/:doctorId'),
+    (0, common_1.UseGuards)(access_guard_1.AccessGuard),
+    (0, access_decorator_1.TenantScoped)(),
+    __param(0, (0, common_1.Param)('tenantId')),
+    __param(1, (0, common_1.Param)('doctorId')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, DoctorUpdateDto]),
+    __metadata("design:returntype", Promise)
+], AppController.prototype, "updateDoctor", null);
 __decorate([
     (0, common_1.Post)('api/tenant/:tenantId/voice-agent/preview'),
     (0, common_1.UseGuards)(access_guard_1.AccessGuard),
