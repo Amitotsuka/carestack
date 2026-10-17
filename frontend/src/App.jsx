@@ -1460,7 +1460,13 @@ function App() {
       </div>
       <div className="row g-4 mb-4">
         <div className="col-12"><section className="tenant-insight-panel">
-          <div className="admin-panel-heading tenant-growth-heading"><div><h3>Clinic growth activity</h3><p>Patient records and appointment bookings created each day · {activityRangeLabel}</p></div><div className="growth-legend"><span><i className="growth-swatch patient-swatch" />New patients</span><span><i className="growth-swatch booking-swatch" />Bookings</span></div></div>
+          <div className="admin-panel-heading tenant-growth-heading"><div><h3>Clinic growth activity</h3><p>Patient records and appointment bookings created each day · {activityRangeLabel}</p></div><div className="tenant-growth-tools"><label className="overview-range-filter" title="Filter clinic growth activity by date range">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10m-7 6h4" /></svg>
+            <span className="visually-hidden">Filter overview activity</span>
+            <select aria-label="Filter clinic growth activity" value={overviewActivityRange} onChange={(event) => setOverviewActivityRange(event.target.value)}>
+              <option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option>
+            </select>
+          </label><div className="growth-legend"><span><i className="growth-swatch patient-swatch" />New patients</span><span><i className="growth-swatch booking-swatch" />Bookings</span></div></div></div>
           <div className="growth-chart-scroll"><div className="growth-chart" style={{ gridTemplateColumns: `repeat(${analytics.activity.length || 7}, minmax(0, 1fr))`, minWidth: analytics.activity.length > 7 ? `${analytics.activity.length * 28}px` : undefined }} role="img" aria-label={`Daily patient registrations compared with appointment bookings for ${activityRangeLabel}`}>
             {analytics.activity.map((day) => <div className="growth-day" key={day.date} title={`${day.date}: ${day.patients} new patients, ${day.bookings} bookings`}>
               <strong>{day.patients + day.bookings}</strong><div className="growth-track"><span className="growth-bar patient-growth" style={{ height: `${day.patients ? Math.max(7, (day.patients / maxActivityCount) * 100) : 0}%` }} /><span className="growth-bar booking-growth" style={{ height: `${day.bookings ? Math.max(7, (day.bookings / maxActivityCount) * 100) : 0}%` }} /></div><small>{day.label}</small>
@@ -1807,13 +1813,6 @@ function App() {
               <div className="workspace-location"><span className="location-dot" />{superAdmin ? 'CareStack platform' : displayedTenant}<span className="location-divider">/</span><span>{workspaceNavigation.find(([view]) => view === activeView)?.[1]}</span></div>
               <div className="workspace-top-actions">
                 {!superAdmin && <span className="tenant-live-badge"><span />Clinic active</span>}
-                {!superAdmin && activeView === 'overview' && <label className="workspace-range-filter" title="Filter overview activity by date range">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10m-7 6h4" /></svg>
-                  <span className="visually-hidden">Filter overview activity</span>
-                  <select aria-label="Filter overview activity" value={overviewActivityRange} onChange={(event) => setOverviewActivityRange(event.target.value)}>
-                    <option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option>
-                  </select>
-                </label>}
                 <div className="workspace-notification-wrap" ref={notificationMenuRef}>
                   <button className={`workspace-icon-button workspace-notification-trigger ${notificationsOpen ? 'open' : ''}`} onClick={() => setNotificationsOpen((open) => !open)} aria-label={`Notifications, ${superAdmin ? unreadClinicInterests.length : unreadBookingNotifications.length} unread`} aria-expanded={notificationsOpen} aria-haspopup="dialog" title={superAdmin ? 'Clinic request notifications' : 'Booking notifications'}>
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>

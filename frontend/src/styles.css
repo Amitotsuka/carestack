@@ -445,6 +445,13 @@ button, input {
   font-size: 0.78rem;
 }
 
+.tenant-growth-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+.overview-range-filter { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 10px; border: 1px solid #b7d9ef; border-radius: 10px; background: #f2f9ff; color: #2c668f; box-shadow: 0 2px 5px rgba(35, 86, 122, .06); }
+.overview-range-filter:focus-within { border-color: #78b8e0; box-shadow: 0 0 0 3px rgba(63, 153, 205, .14); }
+.overview-range-filter svg { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 1.7; }
+.overview-range-filter select { width: auto; max-width: 132px; padding: 0 14px 0 0; border: 0; outline: 0; appearance: none; background: transparent; color: #4f6079; cursor: pointer; font-size: .72rem; font-weight: 650; }
+.overview-range-filter::after { content: '⌄'; margin-left: -17px; color: #8190a4; font-size: .78rem; pointer-events: none; }
+
 .growth-legend > span {
   display: inline-flex;
   align-items: center;
@@ -1152,6 +1159,7 @@ button, input {
   .agenda-row .status-pill { grid-column: 2; justify-self: start; }
   .report-export-row { align-items: flex-start; flex-direction: column; }
   .tenant-growth-heading { flex-direction: column; }
+  .tenant-growth-tools { width: 100%; align-items: center; flex-direction: row; flex-wrap: wrap; justify-content: space-between; }
   .growth-legend { flex-wrap: wrap; }
 }
 
@@ -1310,11 +1318,6 @@ button, input {
 .location-divider { color: #c1ccca; }
 .workspace-top-actions { display: flex; align-items: center; gap: 10px; }
 .tenant-live-badge { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #e2ece7; border-radius: 999px; color: #437162; background: #f7fbf8; font-size: .68rem; font-weight: 650; white-space: nowrap; }
-.workspace-range-filter { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 0 10px; border: 1px solid #b7d9ef; border-radius: 11px; background: #f2f9ff; color: #2c668f; box-shadow: 0 2px 5px rgba(35, 86, 122, .06); }
-.workspace-range-filter:focus-within { border-color: #78b8e0; box-shadow: 0 0 0 3px rgba(63, 153, 205, .14); }
-.workspace-range-filter svg { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 1.7; }
-.workspace-range-filter select { width: auto; max-width: 132px; padding: 0 14px 0 0; border: 0; outline: 0; appearance: none; background: transparent; color: #4f6079; cursor: pointer; font-size: .72rem; font-weight: 650; }
-.workspace-range-filter::after { content: '⌄'; margin-left: -17px; color: #8190a4; font-size: .78rem; pointer-events: none; }
 .workspace-refresh, .workspace-icon-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 38px; padding: 7px 11px; border: 1px solid #a9d2ec; border-radius: 11px; background: #eff8ff; color: #24658f; box-shadow: 0 2px 5px rgba(35, 86, 122, .07); transition: color 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
 .workspace-refresh { font-size: .74rem; }
 .workspace-refresh:hover, .workspace-icon-button:hover, .workspace-icon-button.open { border-color: #72b4de; background: #dff1ff; color: #145a87; box-shadow: 0 3px 9px rgba(47, 105, 145, .13); }
@@ -1424,8 +1427,6 @@ button, input {
 .refresh-spinning { display: inline-block; animation: workspace-refresh 800ms linear infinite; }
 @keyframes workspace-refresh { to { transform: rotate(360deg); } }
 .workspace-top-actions .btn { border-radius: 10px; font-size: .74rem; font-weight: 650; }
-.dashboard-shell .workspace-top-actions .workspace-new-booking { border-color: #1875ad; background: #2589c5; box-shadow: 0 4px 10px rgba(37, 137, 197, .2); }
-.dashboard-shell .workspace-top-actions .workspace-new-booking:hover { border-color: #126697; background: #1978b3; }
 .workspace-content { width: min(100%, 1510px); margin: 0 auto; padding: 32px clamp(20px, 4vw, 56px) 55px; }
 .workspace-page-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin: 4px 0 25px; }
 .workspace-date { margin-bottom: 9px; color: #65817c; font-size: .72rem; font-weight: 650; letter-spacing: .02em; }
@@ -1493,8 +1494,6 @@ button, input {
   .workspace-topbar { top: 0; align-items: flex-start; flex-direction: column; gap: 9px; padding: 10px 16px; }
   .workspace-top-actions { width: 100%; justify-content: flex-end; gap: 7px; }
   .tenant-live-badge { display: none; }
-  .workspace-range-filter { flex: 0 1 143px; min-width: 0; padding-inline: 8px; }
-  .workspace-range-filter select { max-width: 104px; font-size: .66rem; }
   .workspace-refresh { width: 38px; padding: 0; }
   .workspace-refresh-label { display: none; }
   .workspace-user-actions { gap: 5px; padding-left: 8px; }
