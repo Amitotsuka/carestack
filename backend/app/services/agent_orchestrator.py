@@ -1,113 +1,89 @@
-import uuid
-from typing import Optional
-
-from app.config import settings
-from app.schemas import BookingRequest, CallIntentRequest
-from app.store import store
+from app.schemas import AvailabilityRequest, BookingRequest
+from app.services.carestac_client import CarestacClient, CarestacRejected
 
 
 class AgentOrchestrator:
-    def _default_doctor(self, preferred: Optional[str]) -> str:
-        if preferred:
-            return preferred
-        return store.doctors[0]
+    """Coordinates the live clinic tools; it never owns appointment state."""
 
-    def _steps(self, patient_name: str, doctor_name: str, date: str, time: str) -> list[dict]:
-        return [
-            {
-                "agent": "voice-intent-agent",
-                "status": "completed",
-                "message": f"Intent recognized for {patient_name} for a consultation call.",
-            },
-            {
-                "agent": "triage-agent",
-                "status": "completed",
-                "message": "Patient needs an appointment and eligibility is confirmed.",
-            },
-            {
-                "agent": "booking-agent",
-                "status": "completed",
-                "message": f"Selected doctor {doctor_name} for {date} at {time}.",
-            },
-            {
-                "agent": "confirmation-agent",
-                "status": "completed",
-                "message": "Appointment confirmation prepared and SMS/voice reminder queued.",
-            },
-        ]
+    def __init__(self) -> None:
+        self.carestac = CarestacClient()
 
-    def process_booking(self, request: BookingRequest) -> dict:
-        patient_name = request.patient_name.strip()
-        phone_number = request.phone_number.strip()
-        doctor_name = request.doctor_name or self._default_doctor(None)
-        appointment_date = request.appointment_date or "2026-10-20"
-        appointment_time = request.appointment_time or "10:30"
+    async def execute_voice_tool(self, tenant_id: str, payload: dict) -> dict:
+        action = payload.get("action")
+        if action not in {"clinic_info", "faq", "availability", "book"}:
+            raise CarestacRejected("Unsupported voice tool action")
+        return await self.carestac.invoke(tenant_id, payload)
 
-        appointment = store.create_appointment(
-            patient_name=patient_name,
-            phone_number=phone_number,
-            doctor_name=doctor_name,
-            appointment_date=appointment_date,
-            appointment_time=appointment_time,
-            reason=request.reason,
-            call_session_id=str(uuid.uuid4()),
-        )
-
+    async def check_availability(self, request: AvailabilityRequest) -> dict:
+        result = await self.carestac.invoke(request.tenant_id, {
+            "action": "availability",
+            "date": request.appointment_date,
+            "time": request.appointment_time,
+            "doctor_name": request.doctor_name,
+        })
+        if result.get("check_status") != "checked" or result.get("available") is None:
+            return {
+                "status": "not_verified",
+                "message": "The requested slot could not be verified. Offer clinic staff.",
+                "availability": result,
+            }
         return {
-            "appointment_id": appointment.id,
-            "status": "confirmed",
-            "message": f"Appointment booked for {patient_name} with {doctor_name}.",
-            "assigned_number": settings.dedicated_call_number,
-            "orchestration_steps": self._steps(
-                patient_name=patient_name,
-                doctor_name=doctor_name,
-                date=appointment_date,
-                time=appointment_time,
-            ),
-            "appointment": {
-                "id": appointment.id,
-                "patient_name": appointment.patient_name,
-                "phone_number": appointment.phone_number,
-                "doctor_name": appointment.doctor_name,
-                "appointment_date": appointment.appointment_date,
-                "appointment_time": appointment.appointment_time,
-                "reason": appointment.reason,
-                "status": appointment.status,
-            },
+            "status": "available" if result["available"] else "unavailable",
+            "availability": result,
+            "next_step": "Read the exact doctor, date, and time to the caller and obtain explicit confirmation before booking." if result["available"] else "Offer only the alternative slots returned by the clinic calendar.",
         }
 
-    def handle_inbound_call(self, request: CallIntentRequest) -> dict:
-        if request.intent.lower() not in {"book_appointment", "appointment", "book"}:
+    async def process_booking(self, request: BookingRequest) -> dict:
+        if request.confirmed is not True:
             return {
-                "status": "need_more_context",
-                "message": "The agent can help book appointments, check doctor availability, or answer intake questions.",
-                "assigned_number": settings.dedicated_call_number,
-                "orchestration_steps": [
-                    {"agent": "voice-intent-agent", "status": "completed", "message": "Could not identify booking intent."}
-                ],
+                "status": "confirmation_required",
+                "message": "The caller must confirm the complete appointment details before booking.",
             }
 
-        booking_request = BookingRequest(
-            patient_name=request.caller_name,
-            phone_number=request.phone_number,
-            doctor_name=request.preferred_doctor or self._default_doctor(None),
-            appointment_date=request.preferred_date or "2026-10-20",
-            appointment_time=request.preferred_time or "11:00",
-            reason="Inbound voice appointment booking",
-        )
-        return self.process_booking(booking_request)
-
-    def list_appointments(self) -> list[dict]:
-        return [
-            {
-                "id": item.id,
-                "patient_name": item.patient_name,
-                "phone_number": item.phone_number,
-                "doctor_name": item.doctor_name,
-                "appointment_date": item.appointment_date,
-                "appointment_time": item.appointment_time,
-                "reason": item.reason,
-                "status": item.status,
+        # Recheck at commit time to avoid booking from stale availability.
+        availability = await self.carestac.invoke(request.tenant_id, {
+            "action": "availability",
+            "date": request.appointment_date,
+            "time": request.appointment_time,
+            "doctor_name": request.doctor_name,
+        })
+        if availability.get("check_status") != "checked" or availability.get("available") is not True:
+            return {
+                "status": "not_booked",
+                "message": "The confirmed slot is no longer available or could not be verified. Do not claim a booking was made.",
+                "availability": availability,
             }
-            for item in store.list_appointments()
-        ]
+
+        actual_doctor = availability.get("doctor_name")
+        if not isinstance(actual_doctor, str) or not actual_doctor.strip():
+            return {
+                "status": "not_booked",
+                "message": "The clinic did not return a verified doctor for this slot.",
+                "availability": availability,
+            }
+
+        result = await self.carestac.invoke(request.tenant_id, {
+            "action": "book",
+            "request_id": request.request_id,
+            "confirmed": True,
+            "patient_name": request.patient_name,
+            "phone_number": request.phone_number,
+            "doctor_name": actual_doctor,
+            "date": availability.get("date", request.appointment_date),
+            "time": availability.get("time", request.appointment_time),
+            "reason": request.reason,
+        })
+        appointment = result.get("appointment")
+        appointment_id = appointment.get("id") if isinstance(appointment, dict) else None
+        if not appointment_id:
+            return {
+                "status": "not_booked",
+                "message": "The clinic did not confirm a saved appointment. Do not claim a booking was made.",
+                "booking_result": result,
+            }
+        return {
+            "status": "confirmed",
+            "appointment_id": appointment_id,
+            "appointment": appointment,
+            "idempotent_replay": result.get("idempotent_replay") is True,
+        }

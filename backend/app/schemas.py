@@ -1,54 +1,25 @@
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 
 class BookingRequest(BaseModel):
-    patient_name: str = Field(..., min_length=2)
-    phone_number: str = Field(..., min_length=7)
-    doctor_name: Optional[str] = None
-    appointment_date: Optional[str] = None
-    appointment_time: Optional[str] = None
-    reason: str = "General consultation"
+    tenant_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    request_id: str = Field(..., min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    confirmed: bool = False
+    patient_name: str = Field(..., min_length=2, max_length=120)
+    phone_number: str = Field(..., min_length=8, max_length=30)
+    doctor_name: str = Field(..., min_length=2, max_length=120)
+    appointment_date: str = Field(..., min_length=1, max_length=64)
+    appointment_time: str = Field(..., min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=500)
 
 
-class CallIntentRequest(BaseModel):
-    caller_name: str = "Patient"
-    phone_number: str = Field(..., min_length=7)
-    intent: str = "book_appointment"
-    preferred_doctor: Optional[str] = None
-    preferred_date: Optional[str] = None
-    preferred_time: Optional[str] = None
+class AvailabilityRequest(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    appointment_date: str = Field(..., min_length=1, max_length=64)
+    appointment_time: str = Field(..., min_length=1, max_length=32)
+    doctor_name: str = Field(default="", max_length=120)
 
 
-class BookingResponse(BaseModel):
-    appointment_id: Optional[str] = None
-    status: str
-    message: str
-    assigned_number: str
-    orchestration_steps: list[dict]
-    appointment: Optional[dict] = None
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class TenantOnboardRequest(BaseModel):
-    tenant_name: str = Field(..., min_length=2)
-    tenant_domain: str = Field(..., min_length=2)
-    admin_name: str = Field(..., min_length=2)
-    admin_email: str = Field(...)
-    admin_phone: str = Field(..., min_length=10)
-    plan: str = "growth"
-    region: str = "India"
-
-
-class PatientRequest(BaseModel):
-    name: str = Field(..., min_length=2)
-    phone: str = Field(..., min_length=7)
-    email: Optional[str] = None
-    age: Optional[int] = None
-    status: str = "active"
-    notes: Optional[str] = None
+class AgentToolRequest(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    payload: dict = Field(..., max_length=20)

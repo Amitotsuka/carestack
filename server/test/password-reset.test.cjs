@@ -15,7 +15,7 @@ test('platform admin password reset emails a one-time code and accepts it once',
     tenants: {},
     pendingPostgresWrite: Promise.resolve(),
     resendApiKey: 're_test_key',
-    emailFrom: 'CareStack <no-reply@example.com>',
+    emailFrom: 'Carestac <no-reply@example.com>',
   });
   let persistedStates = 0;
   service.persistState = () => { persistedStates += 1; };
@@ -36,8 +36,8 @@ test('platform admin password reset emails a one-time code and accepts it once',
 
     const email = JSON.parse(sentRequest.options.body);
     assert.deepEqual(email.to, ['platform-admin@example.com']);
-    assert.equal(email.from, 'CareStack <no-reply@example.com>');
-    assert.equal(email.subject, 'Your CareStack platform password reset code');
+    assert.equal(email.from, 'Carestac <no-reply@example.com>');
+    assert.equal(email.subject, 'Your Carestac platform password reset code');
     const code = email.text.match(/reset code is: (\d{6})/)?.[1];
     assert.ok(code, 'email should contain a six-digit one-time code');
     assert.equal(service.superAdminPasswordResetCodeHash, createHash('sha256').update(code).digest('hex'));

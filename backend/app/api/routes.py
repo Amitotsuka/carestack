@@ -1,97 +1,72 @@
-from fastapi import APIRouter, HTTPException
+import hmac
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.config import settings
-from app.schemas import BookingRequest, CallIntentRequest, LoginRequest, PatientRequest, TenantOnboardRequest
+from app.schemas import AgentToolRequest, AvailabilityRequest, BookingRequest
 from app.services.agent_orchestrator import AgentOrchestrator
-from app.store import store
+from app.services.carestac_client import CarestacRejected, CarestacUnavailable
 
 router = APIRouter()
 orchestrator = AgentOrchestrator()
 
 
+def require_agent_token(x_agent_token: str = Header(default="")) -> None:
+    expected = settings.agent_service_token
+    if len(expected) < 32 or not hmac.compare_digest(x_agent_token, expected):
+        raise HTTPException(status_code=401, detail="Agent service authentication failed")
+
+
+def orchestration_readiness() -> bool:
+    parsed_url = urlsplit(settings.carestac_api_url)
+    return bool(
+        parsed_url.scheme in {"https", "http"}
+        and parsed_url.hostname
+        and not parsed_url.hostname.startswith("your-")
+        and not parsed_url.username
+        and not parsed_url.password
+        and not parsed_url.query
+        and not parsed_url.fragment
+        and len(settings.agent_service_token) >= 32
+    )
+
+
+def raise_carestac_error(exc: Exception) -> None:
+    if isinstance(exc, CarestacUnavailable):
+        raise HTTPException(status_code=503, detail="Clinic scheduling service is unavailable") from exc
+    if isinstance(exc, CarestacRejected):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    raise HTTPException(status_code=502, detail="Clinic scheduling request failed") from exc
+
+
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "app": settings.app_name}
+    ready = orchestration_readiness()
+    if not ready:
+        raise HTTPException(status_code=503, detail="Agent orchestration is not configured")
+    return {"status": "ok" if ready else "not_ready", "app": settings.app_name, "orchestration_ready": ready}
 
 
-@router.get("/phone/number")
-async def phone_number() -> dict:
-    return {"assigned_number": settings.dedicated_call_number}
+@router.post("/agent/availability")
+async def agent_availability(request: AvailabilityRequest, _: None = Depends(require_agent_token)) -> dict:
+    try:
+        return await orchestrator.check_availability(request)
+    except (CarestacUnavailable, CarestacRejected) as exc:
+        raise_carestac_error(exc)
 
 
-@router.get("/appointments")
-async def list_appointments() -> dict:
-    return {"appointments": orchestrator.list_appointments()}
-
-
-@router.post("/appointments")
-async def create_appointment(request: BookingRequest) -> dict:
-    return orchestrator.process_booking(request)
+@router.post("/agent/voice-tool")
+async def agent_voice_tool(request: AgentToolRequest, _: None = Depends(require_agent_token)) -> dict:
+    try:
+        return await orchestrator.execute_voice_tool(request.tenant_id, request.payload)
+    except (CarestacUnavailable, CarestacRejected) as exc:
+        raise_carestac_error(exc)
 
 
 @router.post("/agent/phone-booking")
-async def phone_booking(request: BookingRequest) -> dict:
-    return orchestrator.process_booking(request)
-
-
-@router.post("/agent/inbound-call")
-async def inbound_call(request: CallIntentRequest) -> dict:
-    return orchestrator.handle_inbound_call(request)
-
-
-@router.post("/auth/login")
-async def login(payload: LoginRequest) -> dict:
-    user = store.login(payload.email, payload.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"user": user, "message": "Login successful"}
-
-
-@router.get("/tenants")
-async def list_tenants() -> dict:
-    return {"tenants": store.list_tenants()}
-
-
-@router.post("/tenants/onboard")
-async def onboard_tenant(payload: TenantOnboardRequest) -> dict:
-    return {"tenant": store.create_tenant(payload.model_dump()), "message": "Tenant onboarded successfully"}
-
-
-@router.get("/tenant/{tenant_id}/dashboard")
-async def tenant_dashboard(tenant_id: str) -> dict:
-    dashboard = store.get_dashboard(tenant_id)
-    if not dashboard:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    return dashboard
-
-
-@router.get("/tenant/{tenant_id}/patients")
-async def list_patients(tenant_id: str) -> dict:
-    dashboard = store.get_dashboard(tenant_id)
-    if not dashboard:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    return {"patients": dashboard["patients"]}
-
-
-@router.post("/tenant/{tenant_id}/patients")
-async def add_patient(tenant_id: str, payload: PatientRequest) -> dict:
+async def phone_booking(request: BookingRequest, _: None = Depends(require_agent_token)) -> dict:
     try:
-        return {"patient": store.add_patient(tenant_id, payload.model_dump()), "message": "Patient created"}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-
-@router.put("/tenant/{tenant_id}/patients/{patient_id}")
-async def update_patient(tenant_id: str, patient_id: str, payload: PatientRequest) -> dict:
-    try:
-        return {"patient": store.update_patient(tenant_id, patient_id, payload.model_dump()), "message": "Patient updated"}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-
-@router.delete("/tenant/{tenant_id}/patients/{patient_id}")
-async def delete_patient(tenant_id: str, patient_id: str) -> dict:
-    try:
-        return store.delete_patient(tenant_id, patient_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        return await orchestrator.process_booking(request)
+    except (CarestacUnavailable, CarestacRejected) as exc:
+        raise_carestac_error(exc)

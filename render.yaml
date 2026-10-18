@@ -14,6 +14,10 @@ services:
         value: "3.12.11"
       - key: PORT
         value: "10000"
+      - key: CARESTAC_API_URL
+        value: https://carestack-6psq.onrender.com
+      - key: AGENT_SERVICE_TOKEN
+        generateValue: true
 
   - type: web
     # Match the existing Render service so the first Blueprint sync corrects
@@ -45,6 +49,11 @@ services:
           type: pserv
           name: carestack-uat-agent
           property: hostport
+      - key: PYTHON_AGENT_SECRET
+        fromService:
+          type: pserv
+          name: carestack-uat-agent
+          envVarKey: AGENT_SERVICE_TOKEN
       - key: JWT_SECRET
         generateValue: true
       - key: CREDENTIALS_ENCRYPTION_KEY

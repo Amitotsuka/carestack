@@ -940,7 +940,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       await this.pendingPostgresWrite;
       await this.sendEmail(
         this.superAdminEmail,
-        'Your CareStack platform password reset code',
+        'Your Carestac platform password reset code',
         `Hello ${this.superAdminName},\n\nYour platform administrator password reset code is: ${code}\n\nIt expires in 15 minutes. If you did not request this code, you can ignore this email.`,
       );
       return { message: 'If an account matches that email, a password reset code has been sent.' };
@@ -956,7 +956,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       await this.pendingPostgresWrite;
       await this.sendEmail(
         user.email,
-        'Your CareStack password reset code',
+        'Your Carestac password reset code',
         `Hello ${user.name},\n\nYour password reset code is: ${code}\n\nIt expires in 15 minutes. If you did not request this code, you can ignore this email.`,
       );
     }
@@ -1480,7 +1480,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         doctor_directory: this.getActiveClinicDoctorDirectory(tenantId),
         doctor_list_source: 'clinic database roster',
         languages: context.languages, receptionist_instructions: context.instructions, faqs: context.faqs,
-        response_policy: 'Only live CareStack tool results are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. Keep the caller’s current appointment request and already collected answers in context across every tool call. An availability result is an intermediate step: do not end the conversation or restart intake after it. If available, tell the caller the exact doctor, date, and time returned, ask only for booking details that are still missing, then read back the patient name, reachable confirmed phone, doctor, date, and time together and get clear final confirmation. After that confirmation, immediately call carestack_book_appointment in the same conversation with action=book, confirmed=true, and the exact confirmed details. Never call book before final confirmation. If the caller chooses an alternative slot, check that exact slot with availability before booking. If availability was not checked or returned available=null, do not book. The patient name may differ from the caller: use only the exact name the caller stated; never invent, complete, translate, normalize, or substitute it. If unclear, ask the caller to repeat or spell it. Never invent a patient phone number or use the clinic phone number for the patient. Use incoming caller ID only when Exotel explicitly exposes it as verified call context and the caller confirms it; otherwise ask for a reachable number and repeat it back. Ask for an optional visit reason only if it is missing; omit it if the caller declines. Offer a human receptionist for other clinic questions.',
+        response_policy: 'Only live Carestac tool results are approved. Never invent, guess, autocomplete, or substitute a doctor name. If doctors is empty, say the clinic has not provided a doctor list and offer clinic staff; do not name a doctor. Keep the caller’s current appointment request and already collected answers in context across every tool call. An availability result is an intermediate step: do not end the conversation or restart intake after it. If available, tell the caller the exact doctor, date, and time returned, ask only for booking details that are still missing, then read back the patient name, reachable confirmed phone, doctor, date, and time together and get clear final confirmation. After that confirmation, immediately call carestack_book_appointment in the same conversation with action=book, confirmed=true, and the exact confirmed details. Never call book before final confirmation. If the caller chooses an alternative slot, check that exact slot with availability before booking. If availability was not checked or returned available=null, do not book. The patient name may differ from the caller: use only the exact name the caller stated; never invent, complete, translate, normalize, or substitute it. If unclear, ask the caller to repeat or spell it. Never invent a patient phone number or use the clinic phone number for the patient. Use incoming caller ID only when Exotel explicitly exposes it as verified call context and the caller confirms it; otherwise ask for a reachable number and repeat it back. Ask for a visit reason only if it is missing; always include the reason field in the booking tool call, passing the caller’s exact words or an empty string if they decline or do not know. Offer a human receptionist for other clinic questions.',
       };
     }
     if (action === 'faq') {

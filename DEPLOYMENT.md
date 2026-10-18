@@ -28,6 +28,6 @@ GitHub Actions runs NestJS tests, the Vite production build, and Python syntax c
 
 - Set production secrets in Render, not in `.env` files or GitHub. Keep `CREDENTIALS_ENCRYPTION_KEY`, `JWT_SECRET`, and `VOICE_TOOL_SECRET` unchanged after creating UAT data.
 - The SQLite disk is attached to one API instance. Back it up before replacing or deleting the Render disk. Move to managed PostgreSQL before running multiple API instances.
-- The Python agent currently uses demo in-memory state. The NestJS SQLite database is the persisted CareStack tenant and appointment store.
+- The Python agent currently uses demo in-memory state. The NestJS SQLite database is the persisted Carestac tenant and appointment store.
 - Twilio credentials can be added to the Python service later, but the current Python code does not send SMS yet.
 - If you later copy local clinic records into UAT, use a sanitized copy and preserve the matching credential-encryption key; do not upload real patient data by default.

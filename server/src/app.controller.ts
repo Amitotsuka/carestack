@@ -1,7 +1,7 @@
 import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, Req, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ArrayMaxSize, IsArray, IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { AppService } from './app.service';
 import { AccessGuard } from './auth/access.guard';
@@ -543,6 +543,27 @@ export class AppController {
     return { http_code: 200, response: { data: result } };
   }
 
+  @Post('api/internal/agent/tools/:tenantId')
+  async pythonAgentTool(
+    @Param('tenantId') tenantId: string,
+    @Headers('x-agent-token') suppliedToken: string,
+    @Body() body: any,
+  ) {
+    const configuredToken = process.env.PYTHON_AGENT_SECRET || '';
+    const expected = Buffer.from(configuredToken);
+    const supplied = Buffer.from(String(suppliedToken || ''));
+    if (expected.length < 32 || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      throw new UnauthorizedException('Agent service authentication failed');
+    }
+    const action = String(body?.action || '').trim().toLowerCase();
+    if (!['clinic_info', 'faq', 'availability', 'book'].includes(action)) {
+      throw new BadRequestException('Unsupported agent tool action');
+    }
+    const result = await this.appService.voiceTool(tenantId, { ...body, action });
+    if ('error' in result) throw new BadRequestException(result.error);
+    return result;
+  }
+
   @Get('api/tenants/:tenantId/exotel/calls')
   @UseGuards(AccessGuard)
   @Roles('tenant_admin')
@@ -642,7 +663,28 @@ export class AppController {
         throw new BadRequestException('Could not determine the tool action. Send action, or provide both date and time for an availability check.');
       }
       const dispatchStarted = performance.now();
-      const result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
+      let result: any;
+      if (process.env.PYTHON_AGENT_URL) {
+        const configuredAgentUrl = process.env.PYTHON_AGENT_URL.trim().replace(/\/+$/, '');
+        const baseUrl = /^https?:\/\//i.test(configuredAgentUrl) ? configuredAgentUrl : `http://${configuredAgentUrl}`;
+        const serviceToken = process.env.PYTHON_AGENT_SECRET || '';
+        if (serviceToken.length < 32) throw new ServiceUnavailableException('Python agent authentication is not configured');
+        const response = await globalThis.fetch(`${baseUrl}/api/agent/voice-tool`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-agent-token': serviceToken },
+          signal: AbortSignal.timeout(15_000),
+          body: JSON.stringify({ tenant_id: tenantId, payload: toolPayload }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          const detail = data.detail || 'Python agent could not execute the clinic tool';
+          if (response.status >= 500) throw new ServiceUnavailableException(detail);
+          throw new BadRequestException(detail);
+        }
+        result = data;
+      } else {
+        result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
+      }
       dispatchMs = performance.now() - dispatchStarted;
       if ('error' in result && result.error === 'Clinic not found.') throw new NotFoundException('Clinic not found');
       if ('error' in result && result.unavailable === true) {
@@ -878,6 +920,41 @@ export class AppController {
     return { appointment, message: 'Appointment booked.' };
   }
 
+  @Post('api/agent/availability')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  async checkAgentAvailability(@Body() body: any) {
+    const tenantId = String(body?.tenant_id ?? '');
+    if (!tenantId) throw new BadRequestException('tenant_id is required');
+    const configuredAgentUrl = (process.env.PYTHON_AGENT_URL || 'http://localhost:8000').trim().replace(/\/+$/, '');
+    const baseUrl = /^https?:\/\//i.test(configuredAgentUrl) ? configuredAgentUrl : `http://${configuredAgentUrl}`;
+    const serviceToken = process.env.PYTHON_AGENT_SECRET || '';
+    if (serviceToken.length < 32) throw new ServiceUnavailableException('Python agent authentication is not configured');
+    try {
+      const fetch = globalThis.fetch;
+      const response = await fetch(`${baseUrl}/api/agent/availability`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-agent-token': serviceToken },
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({
+          tenant_id: tenantId,
+          appointment_date: body.appointment_date,
+          appointment_time: body.appointment_time,
+          doctor_name: body.doctor_name || '',
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new BadGatewayException(data.detail || 'Python agent could not check availability');
+      }
+      return { source: 'python_agent', data };
+    } catch (error) {
+      if (error instanceof BadGatewayException || error instanceof BadRequestException) throw error;
+      throw new ServiceUnavailableException('Python agent service is unavailable');
+    }
+  }
+
   @Post('api/agent/booking')
   @UseGuards(AccessGuard)
   @Roles('tenant_admin')
@@ -885,40 +962,37 @@ export class AppController {
   async triggerOrchestration(@Body() body: any) {
     const tenantId = String(body?.tenant_id ?? '');
     if (!tenantId) throw new BadRequestException('tenant_id is required');
-    const policyError = this.appService.validateAgentBooking(tenantId, String(body?.appointment_time ?? ''));
-    if (policyError) throw new BadRequestException(policyError);
-
     const configuredAgentUrl = (process.env.PYTHON_AGENT_URL || 'http://localhost:8000').trim().replace(/\/+$/, '');
     const baseUrl = /^https?:\/\//i.test(configuredAgentUrl) ? configuredAgentUrl : `http://${configuredAgentUrl}`;
     const agentSecret = process.env.PYTHON_AGENT_SECRET?.trim();
     if (!agentSecret) throw new BadGatewayException('Python agent authentication is not configured');
     try {
-      const fetch = globalThis.fetch;
-      const response = await fetch(`${baseUrl}/api/agent/phone-booking`, {
+      const response = await globalThis.fetch(`${baseUrl}/api/agent/phone-booking`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Agent-Secret': agentSecret },
+        headers: { 'Content-Type': 'application/json', 'x-agent-token': agentSecret },
+        signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({
+          tenant_id: tenantId,
+          request_id: body.request_id,
+          confirmed: body.confirmed,
           patient_name: body.patient_name,
           phone_number: body.phone_number,
           doctor_name: body.doctor_name,
           appointment_date: body.appointment_date,
           appointment_time: body.appointment_time,
-          reason: body.reason,
+          reason: body.reason || '',
         }),
       });
       const data = await response.json();
-      if (!response.ok || !data.appointment) {
-        throw new BadGatewayException(data.detail || 'Python agent could not complete the booking');
-      }
-
-      const appointment = await this.appService.addBooking(tenantId, data.appointment);
-      if (!appointment) throw new BadRequestException('Tenant not found');
-      if ('error' in appointment) throw new BadRequestException(appointment.error);
-
+      if (!response.ok) throw new BadGatewayException(data.detail || 'Python agent could not complete the booking');
+      if (data.status !== 'confirmed') return { source: 'python_agent', data };
+      const appointment = data.appointment;
+      if (!appointment?.id) throw new BadGatewayException('Clinic scheduling service did not return a confirmed appointment ID');
       return { source: 'python_agent', data, appointment };
     } catch (error) {
       if (error instanceof BadGatewayException || error instanceof BadRequestException) throw error;
-      throw new BadGatewayException('Python agent service is unavailable');
+      throw new ServiceUnavailableException('Python agent service is unavailable');
     }
   }
 }
