@@ -1,0 +1,22 @@
+# Free UAT Python booking agent. Web services have a public URL, so the agent
+# endpoint accepts booking requests only when Node supplies PYTHON_AGENT_SECRET.
+services:
+  - type: web
+    name: carestack-uat-agent-web
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn agent_service:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.11"
+      - key: PYTHON_AGENT_SECRET
+        fromService:
+          type: web
+          name: carestack
+          envVarKey: PYTHON_AGENT_SECRET

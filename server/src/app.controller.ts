@@ -890,11 +890,13 @@ export class AppController {
 
     const configuredAgentUrl = (process.env.PYTHON_AGENT_URL || 'http://localhost:8000').trim().replace(/\/+$/, '');
     const baseUrl = /^https?:\/\//i.test(configuredAgentUrl) ? configuredAgentUrl : `http://${configuredAgentUrl}`;
+    const agentSecret = process.env.PYTHON_AGENT_SECRET?.trim();
+    if (!agentSecret) throw new BadGatewayException('Python agent authentication is not configured');
     try {
       const fetch = globalThis.fetch;
       const response = await fetch(`${baseUrl}/api/agent/phone-booking`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Agent-Secret': agentSecret },
         body: JSON.stringify({
           patient_name: body.patient_name,
           phone_number: body.phone_number,
