@@ -969,7 +969,6 @@ export class AppController {
     try {
       const response = await globalThis.fetch(`${baseUrl}/api/agent/phone-booking`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Agent-Secret': agentSecret },
         headers: { 'Content-Type': 'application/json', 'x-agent-token': agentSecret },
         signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({
