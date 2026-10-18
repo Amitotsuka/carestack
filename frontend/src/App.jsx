@@ -1673,7 +1673,7 @@ function App() {
         <section className="closing-cta"><p className="section-kicker">READY TO BRING YOUR CLINIC ONBOARD?</p><h2>A clearer day for your care team starts here.</h2><div><a className="button-dark" href="#clinic-request">Request a demo <span aria-hidden="true">→</span></a><button className="button-outline" onClick={() => openLogin('tenant')}>Clinic sign in</button></div></section>
       </main>
 
-      <footer className="site-footer"><a className="site-wordmark" href="#top"><span className="wordmark-symbol">C</span><span>care<span>stack</span></span></a><span>© {new Date().getFullYear()} CareStack. All rights reserved.</span><button onClick={() => openLogin('super_admin')}>Platform admin</button></footer>
+      <footer className="site-footer"><a className="site-wordmark" href="#top"><span className="wordmark-symbol">C</span><span>care<span>stack</span></span></a><span>AI-assisted clinic operations · India · © {new Date().getFullYear()} CareStack. All rights reserved.</span><button onClick={() => openLogin('super_admin')}>Platform admin</button></footer>
 
       {loginOpen && <div className="login-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLoginOpen(false); }}>
         <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-heading">
