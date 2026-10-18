@@ -1673,7 +1673,7 @@ function App() {
         <section className="closing-cta"><p className="section-kicker">READY TO BRING YOUR CLINIC ONBOARD?</p><h2>A clearer day for your care team starts here.</h2><div><a className="button-dark" href="#clinic-request">Request a demo <span aria-hidden="true">→</span></a><button className="button-outline" onClick={() => openLogin('tenant')}>Clinic sign in</button></div></section>
       </main>
 
-      <footer className="site-footer"><a className="site-wordmark" href="#top"><span className="wordmark-symbol">C</span><span>care<span>stack</span></span></a><span>AI-assisted clinic operations · India</span><button onClick={() => openLogin('super_admin')}>Platform admin</button></footer>
+      <footer className="site-footer"><a className="site-wordmark" href="#top"><span className="wordmark-symbol">C</span><span>care<span>stack</span></span></a><span>© {new Date().getFullYear()} CareStack. All rights reserved.</span><button onClick={() => openLogin('super_admin')}>Platform admin</button></footer>
 
       {loginOpen && <div className="login-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLoginOpen(false); }}>
         <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-heading">
@@ -1810,7 +1810,7 @@ function App() {
 
           <main className="workspace-main">
             <header className="workspace-topbar">
-              <div className="workspace-location"><span className="location-dot" />{superAdmin ? 'CareStack platform' : displayedTenant}<span className="location-divider">/</span><span>{workspaceNavigation.find(([view]) => view === activeView)?.[1]}</span></div>
+              <div className="workspace-location"><span className="location-dot" /><span className="workspace-location-tenant" title={superAdmin ? 'CareStack platform' : displayedTenant}>{superAdmin ? 'CareStack platform' : displayedTenant}</span><span className="location-divider">/</span><span>{workspaceNavigation.find(([view]) => view === activeView)?.[1]}</span></div>
               <div className="workspace-top-actions">
                 {!superAdmin && <span className="tenant-live-badge"><span />Clinic active</span>}
                 <div className="workspace-notification-wrap" ref={notificationMenuRef}>
@@ -1854,7 +1854,7 @@ function App() {
 
             <div className="workspace-content">
               <div className="workspace-page-heading">
-                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}{!superAdmin && activeView === 'overview' ? `, ${String(session.name || 'team').split(' ')[0]}` : ''}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'doctors' ? 'Manage the clinic roster used by availability checks and the voice agent.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : 'Track clinic activity and export the records your team needs.'}</p></div>
+                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'doctors' ? 'Manage the clinic roster used by availability checks and the voice agent.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : 'Track clinic activity and export the records your team needs.'}</p></div>
               </div>
 
               {(notice || error) && <div className={`alert ${error ? 'alert-danger' : 'alert-success'} alert-dismissible`} role="status">
