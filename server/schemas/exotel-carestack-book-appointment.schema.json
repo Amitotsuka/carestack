@@ -39,11 +39,6 @@
     "time": {
       "type": "string",
       "description": "Appointment time in 24-hour HH:mm format."
-    },
-    "reason": {
-      "type": "string",
-      "maxLength": 500,
-      "description": "Optional caller-provided visit reason. Omit if the caller did not provide one; never invent a reason."
     }
   },
   "required": ["action", "request_id", "confirmed", "patient_name", "phone_number", "doctor_name", "date", "time"],

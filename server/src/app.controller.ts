@@ -615,11 +615,16 @@ export class AppController {
     @Headers('authorization') authorizationHeader: string,
     @Headers('x-tenant-id') _tenantHeader: string,
     @Headers('content-type') contentType: string,
+    @Query('reason') queryReason?: string,
   ) {
     const started = performance.now();
     const traceId = randomUUID();
     const extracted = extractVoiceToolPayload(body);
     const toolPayload = extracted.payload;
+    // Exotel can supply the optional visit reason in the query string instead
+    // of its POST body schema. Prefer it when present; otherwise keep the
+    // existing body value (or let booking default to an empty reason).
+    if (queryReason !== undefined) toolPayload.reason = queryReason;
     const rawAction = typeof toolPayload.action === 'string' ? toolPayload.action.trim().toLowerCase() : '';
     const supportedActions = ['clinic_info', 'faq', 'availability', 'book'];
     const actionValue = supportedActions.includes(rawAction) ? rawAction : '';
@@ -675,7 +680,24 @@ export class AppController {
           signal: AbortSignal.timeout(15_000),
           body: JSON.stringify({ tenant_id: tenantId, payload: toolPayload }),
         });
-        const data = await response.json();
+        let data: any;
+        try {
+          data = await response.json();
+        } catch {
+          const upstreamContentType = response.headers.get('content-type') || 'unknown';
+          this.logger.warn(JSON.stringify({
+            event: 'voice_tool.upstream_invalid_response', trace_id: traceId, action,
+            upstream_status: response.status, upstream_content_type: upstreamContentType.slice(0, 80),
+          }));
+          throw new ServiceUnavailableException(
+            action === 'availability'
+              ? 'Could not verify availability with the clinic scheduling service. Please try again or contact clinic staff.'
+              : 'The clinic scheduling service returned an invalid response. Please try again or contact clinic staff.',
+          );
+        }
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+          throw new ServiceUnavailableException('The clinic scheduling service returned an invalid response. Please try again or contact clinic staff.');
+        }
         if (!response.ok) {
           const detail = data.detail || 'Python agent could not execute the clinic tool';
           if (response.status >= 500) throw new ServiceUnavailableException(detail);
