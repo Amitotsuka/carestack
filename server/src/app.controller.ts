@@ -681,29 +681,42 @@ export class AppController {
           body: JSON.stringify({ tenant_id: tenantId, payload: toolPayload }),
         });
         let data: any;
+        let receivedJson = false;
         try {
           data = await response.json();
+          receivedJson = true;
         } catch {
           const upstreamContentType = response.headers.get('content-type') || 'unknown';
           this.logger.warn(JSON.stringify({
             event: 'voice_tool.upstream_invalid_response', trace_id: traceId, action,
             upstream_status: response.status, upstream_content_type: upstreamContentType.slice(0, 80),
           }));
-          throw new ServiceUnavailableException(
-            action === 'availability'
-              ? 'Could not verify availability with the clinic scheduling service. Please try again or contact clinic staff.'
-              : 'The clinic scheduling service returned an invalid response. Please try again or contact clinic staff.',
-          );
         }
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
-          throw new ServiceUnavailableException('The clinic scheduling service returned an invalid response. Please try again or contact clinic staff.');
+        if (!receivedJson && response.status === 502 && action !== 'book') {
+          // Render's sleeping free-tier agent can return an HTML 502 before
+          // FastAPI starts. For read-only tools, query the same live clinic
+          // database through this authenticated API instead of fabricating a
+          // result or making the caller retry. Never replay a booking here.
+          this.logger.warn(JSON.stringify({
+            event: 'voice_tool.live_read_fallback', trace_id: traceId, action,
+            source: 'clinic_database', reason: 'agent_gateway_html_502',
+          }));
+          result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
+        } else {
+          if (!receivedJson || !data || typeof data !== 'object' || Array.isArray(data)) {
+            throw new ServiceUnavailableException(
+              action === 'availability'
+                ? 'Could not verify availability with the clinic scheduling service. Please try again or contact clinic staff.'
+                : 'The clinic scheduling service returned an invalid response. Please try again or contact clinic staff.',
+            );
+          }
+          if (!response.ok) {
+            const detail = data.detail || 'Python agent could not execute the clinic tool';
+            if (response.status >= 500) throw new ServiceUnavailableException(detail);
+            throw new BadRequestException(detail);
+          }
+          result = data;
         }
-        if (!response.ok) {
-          const detail = data.detail || 'Python agent could not execute the clinic tool';
-          if (response.status >= 500) throw new ServiceUnavailableException(detail);
-          throw new BadRequestException(detail);
-        }
-        result = data;
       } else {
         result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
       }
