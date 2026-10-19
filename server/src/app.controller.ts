@@ -668,46 +668,12 @@ export class AppController {
         throw new BadRequestException('Could not determine the tool action. Send action, or provide both date and time for an availability check.');
       }
       const dispatchStarted = performance.now();
-      let result: any;
-      // Read-only clinic tools use the live Nest clinic database directly.
-      // The Python Render service may sleep on its free tier and return an
-      // HTML gateway error; it adds no data or decision logic to these calls.
-      // Keep booking on the Python orchestration path and fail closed on any
-      // uncertain response so a write is never replayed automatically.
-      if (process.env.PYTHON_AGENT_URL && action === 'book') {
-        const configuredAgentUrl = process.env.PYTHON_AGENT_URL.trim().replace(/\/+$/, '');
-        const baseUrl = /^https?:\/\//i.test(configuredAgentUrl) ? configuredAgentUrl : `http://${configuredAgentUrl}`;
-        const serviceToken = process.env.PYTHON_AGENT_SECRET || '';
-        if (serviceToken.length < 32) throw new ServiceUnavailableException('Python agent authentication is not configured');
-        const response = await globalThis.fetch(`${baseUrl}/api/agent/voice-tool`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-agent-token': serviceToken },
-          signal: AbortSignal.timeout(15_000),
-          body: JSON.stringify({ tenant_id: tenantId, payload: toolPayload }),
-        });
-        let data: any;
-        try {
-          data = await response.json();
-        } catch {
-          const upstreamContentType = response.headers.get('content-type') || 'unknown';
-          this.logger.warn(JSON.stringify({
-            event: 'voice_tool.upstream_invalid_response', trace_id: traceId, action,
-            upstream_status: response.status, upstream_content_type: upstreamContentType.slice(0, 80),
-          }));
-          throw new ServiceUnavailableException('The clinic booking service returned an invalid response. Booking status is unverified; do not retry automatically.');
-        }
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
-          throw new ServiceUnavailableException('The clinic booking service returned an invalid response. Booking status is unverified; do not retry automatically.');
-        }
-        if (!response.ok) {
-          const detail = data.detail || 'Python agent could not execute the clinic tool';
-          if (response.status >= 500) throw new ServiceUnavailableException(detail);
-          throw new BadRequestException(detail);
-        }
-        result = data;
-      } else {
-        result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
-      }
+      // All caller tools execute in the authenticated Nest service. It owns
+      // the live clinic calendar and booking persistence; routing a write via
+      // a sleeping proxy adds no guarantees and can hide a committed result.
+      // The booking path enforces explicit confirmation and request_id
+      // idempotency, so retries with the same ID cannot create duplicates.
+      const result = await this.appService.voiceTool(tenantId, toolPayload, traceId);
       dispatchMs = performance.now() - dispatchStarted;
       if ('error' in result && result.error === 'Clinic not found.') throw new NotFoundException('Clinic not found');
       if ('error' in result && result.unavailable === true) {
