@@ -15,6 +15,7 @@ type TenantUser = {
   role: string;
   password_hash: string;
   permissions?: string[];
+  permission_overrides?: { allow?: string[]; deny?: string[] };
   must_change_password?: boolean;
   temporary_password_expires_at?: number;
   password_reset_code_hash?: string;
@@ -25,9 +26,26 @@ type TenantUser = {
 };
 
 const staffPermissions = new Set([
-  'overview:view', 'agents:view', 'doctors:view', 'doctors:manage',
-  'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'reports:view',
+  'overview:view', 'overview:today_plan', 'agents:view', 'doctors:view', 'doctors:manage',
+  'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'payments:view', 'payments:manage', 'payments:reconcile', 'reports:view',
 ]);
+const defaultStaffRolePermissions = [...staffPermissions].filter((permission) => !['payments:view', 'payments:manage', 'payments:reconcile'].includes(permission));
+
+export const PRODUCT_FEATURES = [
+  { id: 'dashboard', label: 'Clinic dashboard', description: 'Daily clinic overview and activity analytics.' },
+  { id: 'ai_receptionist', label: 'AI receptionist', description: 'Agent setup, call configuration, and FAQ tools.' },
+  { id: 'doctors', label: 'Doctor directory', description: 'Clinic doctor roster and specialties.' },
+  { id: 'patients', label: 'Patient records', description: 'Patient directory and contact records.' },
+  { id: 'appointments', label: 'Appointments', description: 'Booking calendar, waitlist, and appointment updates.' },
+  { id: 'payment_transactions', label: 'Payments & transactions', description: 'Completed-visit billing ledger, payment details, and outstanding balances.' },
+  { id: 'fee_reconciliation', label: 'Fees & ledger reconciliation', description: 'Daily and monthly completed-visit reconciliation with admin-approved billing corrections.' },
+  { id: 'reports', label: 'Reports', description: 'Clinic reports and booking history.' },
+  { id: 'staff_accounts', label: 'Staff accounts and roles', description: 'Clinic staff accounts and access policies.' },
+] as const;
+const allProductFeatureIds = PRODUCT_FEATURES.map(({ id }) => id);
+const defaultProductFeatureIds = allProductFeatureIds;
+
+type ClinicRole = { id: string; name: string; permissions: string[]; built_in?: boolean };
 
 type Patient = {
   id: string;
@@ -62,7 +80,48 @@ type Booking = {
   duration_minutes?: number;
   reason?: string;
   status: string;
+  billing?: {
+    consultation_fee: number;
+    discount_amount: number;
+    additional_charges: number;
+    amount_paid: number;
+    payment_method: 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other' | 'unpaid';
+    payment_reference?: string;
+    completion_notes?: string;
+    payment_proof_data_url?: string;
+    payment_proof_name?: string;
+    transaction_id?: string;
+    recorded_by?: string;
+    payment_status: 'paid' | 'partial' | 'unpaid';
+    updated_at: string;
+    reconciled_at?: string;
+    reconciled_by?: string;
+  };
   created_at?: string;
+};
+
+type WaitlistEntry = {
+  id: string;
+  name: string;
+  phone: string;
+  doctor_name?: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  notes?: string;
+  status: 'waiting' | 'contacted' | 'booked' | 'closed';
+  created_at: string;
+};
+
+type PaymentChangeRequest = {
+  id: string;
+  appointment_id: string;
+  requester: string;
+  message: string;
+  proposed_billing: Omit<NonNullable<Booking['billing']>, 'transaction_id' | 'recorded_by' | 'payment_status' | 'updated_at' | 'reconciled_at' | 'reconciled_by'>;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+  reviewed_at?: string;
+  reviewed_by?: string;
 };
 
 type ExotelCall = {
@@ -87,6 +146,7 @@ type Plan = {
   annual_price: number;
   clinic_limit: number | null;
   user_limit: number | null;
+  features: string[];
 };
 
 type Tenant = {
@@ -98,12 +158,17 @@ type Tenant = {
   admin_phone: string;
   plan: string;
   subscription_status: 'active' | 'paused';
+  subscription_start_date?: string;
+  subscription_end_date?: string;
   billing_cycle: 'monthly' | 'annual';
   monthly_price: number;
   region: string;
   users: TenantUser[];
+  roles?: ClinicRole[];
   patients: Patient[];
   bookings: Booking[];
+  payment_change_requests?: PaymentChangeRequest[];
+  waitlist?: WaitlistEntry[];
   doctors?: Doctor[];
   exotel_calls?: ExotelCall[];
   voice_agent: { enabled: boolean; availability: 'all_day' | 'business_hours'; open_time: string; close_time: string; timezone: string; appointment_duration_minutes?: number; clinic_context?: any };
@@ -137,9 +202,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   private superAdminPasswordResetCodeHash: string | null = null;
   private superAdminPasswordResetExpiresAt: number | null = null;
   private planCatalog: Plan[] = [
-    { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3 },
-    { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15 },
-    { id: 'enterprise', name: 'Enterprise', monthly_price: 39999, annual_price: 399990, clinic_limit: null, user_limit: null },
+    { id: 'starter', name: 'Starter', monthly_price: 4999, annual_price: 49990, clinic_limit: 1, user_limit: 3, features: [...defaultProductFeatureIds] },
+    { id: 'growth', name: 'Growth', monthly_price: 14999, annual_price: 149990, clinic_limit: 5, user_limit: 15, features: [...defaultProductFeatureIds] },
+    { id: 'enterprise', name: 'Enterprise', monthly_price: 39999, annual_price: 399990, clinic_limit: null, user_limit: null, features: [...defaultProductFeatureIds] },
   ];
   private database?: Database.Database;
   private postgres?: Pool;
@@ -244,10 +309,25 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       tenants?: Record<string, Tenant & { users: Array<TenantUser & { password?: string }> }>;
       planCatalog?: Plan[];
       clinicInterests?: ClinicInterest[];
+      permissionDefaultsVersion?: number;
+      planFeatureAccessVersion?: number;
       superAdminProfile?: { name?: string; email?: string; avatar_data_url?: string | null; password_hash?: string; phone?: string; employee_id?: string; password_reset_code_hash?: string | null; password_reset_expires_at?: number | null };
     };
     this.tenants = state.tenants || {};
-    this.planCatalog = state.planCatalog || this.planCatalog;
+    let planFeaturesMigrated = false;
+    this.planCatalog = (state.planCatalog || this.planCatalog).map((plan) => ({
+      ...plan,
+      features: Array.isArray((plan as any).features)
+        ? (plan as any).features.filter((feature: string) => allProductFeatureIds.includes(feature as any))
+        : (planFeaturesMigrated = true, [...defaultProductFeatureIds]),
+    }));
+    const migrateBillingPlanFeatures = (state.planFeatureAccessVersion || 0) < 1;
+    if (migrateBillingPlanFeatures) {
+      this.planCatalog = this.planCatalog.map((plan) => ({
+        ...plan,
+        features: [...new Set([...(plan.features || []), 'payment_transactions', 'fee_reconciliation'])],
+      }));
+    }
     this.clinicInterests = state.clinicInterests || [];
     if (state.superAdminProfile) {
       this.superAdminName = state.superAdminProfile.name || this.superAdminName;
@@ -259,7 +339,43 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       this.superAdminPasswordResetCodeHash = state.superAdminProfile.password_reset_code_hash || null;
       this.superAdminPasswordResetExpiresAt = state.superAdminProfile.password_reset_expires_at || null;
     }
-    let migrated = this.migratePasswordHashes();
+    let migrated = this.migratePasswordHashes() || planFeaturesMigrated || migrateBillingPlanFeatures;
+    const migratePaymentDefaults = (state.permissionDefaultsVersion || 0) < 1;
+    Object.values(this.tenants).forEach((tenant) => {
+      if (!Array.isArray(tenant.roles)) {
+        tenant.roles = [{ id: 'receptionist', name: 'Receptionist', built_in: true, permissions: [...defaultStaffRolePermissions] }];
+        migrated = true;
+      }
+      const receptionistRole = tenant.roles.find((role) => role.id === 'receptionist');
+      if (migratePaymentDefaults && receptionistRole) {
+        receptionistRole.permissions = receptionistRole.permissions.filter((permission) => permission !== 'payments:view' && permission !== 'payments:manage');
+        tenant.users.filter((user) => user.role === 'receptionist').forEach((user) => {
+          if (user.permission_overrides?.allow) user.permission_overrides.allow = user.permission_overrides.allow.filter((permission) => permission !== 'payments:view' && permission !== 'payments:manage');
+          if (user.permissions) user.permissions = user.permissions.filter((permission) => permission !== 'payments:view' && permission !== 'payments:manage');
+        });
+        migrated = true;
+      }
+      tenant.users.filter((user) => user.role !== 'tenant_admin').forEach((user) => {
+        if (!user.role || user.role === 'receptionist') user.role = 'receptionist';
+        if (!user.permission_overrides && user.role === 'receptionist' && Array.isArray(user.permissions)) {
+          const receptionist = tenant.roles?.find((role) => role.id === 'receptionist');
+          user.permission_overrides = {
+            allow: [...new Set(user.permissions)].filter((permission) => receptionist?.permissions.includes(permission)),
+            deny: (receptionist?.permissions || []).filter((permission) => !user.permissions!.includes(permission)),
+          };
+          migrated = true;
+        }
+      });
+      if (!tenant.subscription_start_date) {
+        tenant.subscription_start_date = this.currentSubscriptionDate();
+        migrated = true;
+      }
+      if (!tenant.subscription_end_date) {
+        tenant.subscription_end_date = this.calculateSubscriptionEndDate(tenant.subscription_start_date, tenant.billing_cycle);
+        migrated = true;
+      }
+    });
+    if (migratePaymentDefaults) migrated = true;
     if (!state.superAdminProfile || !state.superAdminProfile.employee_id || state.superAdminProfile.phone === undefined) migrated = true;
     return migrated;
   }
@@ -366,6 +482,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       tenants: this.tenants,
       planCatalog: this.planCatalog,
       clinicInterests: this.clinicInterests,
+      permissionDefaultsVersion: 1,
+      planFeatureAccessVersion: 1,
       superAdminProfile: {
         name: this.superAdminName,
         email: this.superAdminEmail,
@@ -420,6 +538,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       plan: 'growth',
       subscription_status: 'active',
       billing_cycle: 'monthly',
+      subscription_start_date: this.currentSubscriptionDate(),
+      subscription_end_date: this.calculateSubscriptionEndDate(this.currentSubscriptionDate(), 'monthly'),
       monthly_price: 14999,
       region: 'India',
       users: [
@@ -434,6 +554,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           employee_id: 'SKYCARE-MULTI-SPECIALITY-0001',
         },
       ],
+      roles: [{ id: 'receptionist', name: 'Receptionist', built_in: true, permissions: [...defaultStaffRolePermissions] }],
       patients: [
         {
           id: 'pat-1001',
@@ -483,7 +604,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       for (const user of tenant.users) {
         if (user.email.toLowerCase() === email.toLowerCase() && await bcrypt.compare(password, user.password_hash)) {
           if (user.must_change_password && user.temporary_password_expires_at && user.temporary_password_expires_at < Date.now()) return null;
-          if (tenant.subscription_status !== 'active') return null;
+          if (this.effectiveSubscriptionStatus(tenant) !== 'active') return null;
           return {
             user_id: user.id,
             role: user.role,
@@ -493,7 +614,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
             email,
             avatar_data_url: user.avatar_data_url || null,
             ...(user.role === 'tenant_admin' ? { phone: user.phone || tenant.admin_phone, employee_id: user.employee_id } : {}),
-            permissions: user.role === 'tenant_admin' ? [...staffPermissions] : (user.permissions || []),
+            permissions: user.role === 'tenant_admin'
+              ? [...staffPermissions]
+              : this.resolveStaffPermissions(tenant.roles?.find((role) => role.id === user.role)?.permissions || [], user.permission_overrides || (user.role === 'receptionist' && user.permissions ? { allow: user.permissions, deny: [] } : undefined)),
             must_change_password: Boolean(user.must_change_password),
           };
         }
@@ -505,32 +628,115 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   getStaffAccess(tenantId: string, userId: string) {
     const tenant = this.tenants[tenantId];
-    const user = tenant?.users.find((item) => item.id === userId && item.role === 'receptionist');
-    return user ? { tenant_id: tenantId, role: user.role, permissions: user.permissions || [] } : null;
+    const user = tenant?.users.find((item) => item.id === userId && item.role !== 'tenant_admin');
+    if (!user || !tenant) return null;
+    const role = (tenant.roles || []).find((item) => item.id === user.role);
+    if (!role) return null;
+    return { tenant_id: tenantId, role: user.role, permissions: this.resolveStaffPermissions(role.permissions, user.permission_overrides) };
+  }
+
+  private resolveStaffPermissions(rolePermissions: string[], overrides?: { allow?: string[]; deny?: string[] }) {
+    const denied = new Set(overrides?.deny || []);
+    const allowed = new Set(overrides?.allow || []);
+    const resolved = new Set([...rolePermissions.filter((permission) => !denied.has(permission)), ...allowed]
+      .filter((permission) => staffPermissions.has(permission)));
+    for (const [view, manage] of [['doctors:view', 'doctors:manage'], ['patients:view', 'patients:manage'], ['appointments:view', 'appointments:manage'], ['payments:view', 'payments:manage']] as const) {
+      if (denied.has(view)) {
+        resolved.delete(view);
+        resolved.delete(manage);
+      } else if (resolved.has(manage)) {
+        resolved.add(view);
+      }
+    }
+    if (resolved.has('overview:today_plan') && !denied.has('overview:view')) resolved.add('overview:view');
+    return [...resolved];
+  }
+
+  private normalizePermissionOverrides(overrides?: { allow?: string[]; deny?: string[] }) {
+    const allow = [...new Set(Array.isArray(overrides?.allow) ? overrides.allow : [])].filter((permission) => staffPermissions.has(permission));
+    const allowed = new Set(allow);
+    const deny = [...new Set(Array.isArray(overrides?.deny) ? overrides.deny : [])].filter((permission) => staffPermissions.has(permission) && !allowed.has(permission));
+    return { allow, deny };
+  }
+
+  isStaffRole(tenantId: string, roleId: string) {
+    return Boolean(this.tenants[tenantId]?.roles?.some((role) => role.id === roleId));
+  }
+
+  listClinicRoles(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    return tenant ? (tenant.roles || []).map((role) => ({ ...role, members: tenant.users.filter((user) => user.role === role.id).length })) : null;
+  }
+
+  createClinicRole(tenantId: string, payload: { id: string; name: string; permissions: string[] }) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    tenant.roles ||= [];
+    const id = String(payload.id || '').trim().toLowerCase();
+    const name = String(payload.name || '').trim();
+    if (!/^[a-z][a-z0-9_-]{1,39}$/.test(id) || !name || tenant.roles.some((role) => role.id === id)) return false;
+    const role: ClinicRole = { id, name, permissions: [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission)) };
+    tenant.roles.push(role);
+    this.persistState();
+    return { ...role, members: 0 };
+  }
+
+  updateClinicRole(tenantId: string, roleId: string, payload: { name?: string; permissions?: string[] }) {
+    const tenant = this.tenants[tenantId];
+    const role = tenant?.roles?.find((item) => item.id === roleId);
+    if (!tenant || !role) return null;
+    if (payload.name !== undefined) role.name = String(payload.name).trim();
+    if (payload.permissions) {
+      role.permissions = [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission));
+    }
+    this.persistState();
+    return { ...role, members: tenant.users.filter((user) => user.role === role.id).length };
+  }
+
+  deleteClinicRole(tenantId: string, roleId: string) {
+    const tenant = this.tenants[tenantId];
+    const role = tenant?.roles?.find((item) => item.id === roleId);
+    if (!tenant || !role) return 'not_found';
+    if (role.built_in || role.id === 'receptionist') return 'protected';
+    if (tenant.users.some((user) => user.role === roleId)) return 'in_use';
+    tenant.roles = tenant.roles!.filter((item) => item.id !== roleId);
+    this.persistState();
+    return 'deleted';
   }
 
   listStaff(tenantId: string) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return null;
-    return tenant.users.filter((user) => user.role !== 'tenant_admin').map(({ id, name, email, role, permissions }) => ({ id, tenant_id: tenantId, name, email, role, permissions: permissions || [] }));
+    return tenant.users.filter((user) => user.role !== 'tenant_admin').map(({ id, name, email, role, permissions, permission_overrides }) => ({
+      id, tenant_id: tenantId, name, email, role,
+      role_name: tenant.roles?.find((item) => item.id === role)?.name || role,
+      permissions: this.resolveStaffPermissions(tenant.roles?.find((item) => item.id === role)?.permissions || [], permission_overrides || (role === 'receptionist' && permissions ? { allow: permissions, deny: [] } : undefined)),
+      permission_overrides: permission_overrides || { allow: [], deny: [] },
+    }));
   }
 
-  createStaff(tenantId: string, payload: { name: string; email: string; password: string; permissions: string[] }) {
+  createStaff(tenantId: string, payload: { name: string; email: string; password: string; permissions?: string[]; permission_overrides?: { allow?: string[]; deny?: string[] }; role?: string }) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return null;
     const email = payload.email.trim().toLowerCase();
     if (email === this.superAdminEmail || Object.values(this.tenants).some((item) => item.users.some((user) => user.email.toLowerCase() === email))) return false;
+    const roleId = payload.role || 'receptionist';
+    const role = tenant.roles?.find((item) => item.id === roleId);
+    if (!role) return null;
     const user: TenantUser = {
       id: `staff-${randomUUID()}`, tenant_id: tenantId, name: payload.name.trim(), email,
-      role: 'receptionist', password_hash: bcrypt.hashSync(payload.password, 12),
-      permissions: [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission)),
+      role: roleId, password_hash: bcrypt.hashSync(payload.password, 12),
+      permission_overrides: payload.permission_overrides ? this.normalizePermissionOverrides(payload.permission_overrides) : payload.permissions ? {
+        allow: [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission)),
+        deny: role.permissions.filter((permission) => !payload.permissions!.includes(permission)),
+      } : { allow: [], deny: [] },
     };
     tenant.users.push(user);
     this.persistState();
-    return { id: user.id, tenant_id: user.tenant_id, name: user.name, email: user.email, role: user.role, permissions: user.permissions };
+    return this.listStaff(tenantId)?.find((member) => member.id === user.id) || null;
   }
 
-  updateStaff(tenantId: string, staffId: string, payload: { name?: string; email?: string; password?: string; permissions?: string[] }) {
+  updateStaff(tenantId: string, staffId: string, payload: { name?: string; email?: string; password?: string; permissions?: string[]; permission_overrides?: { allow?: string[]; deny?: string[] }; role?: string }) {
     const tenant = this.tenants[tenantId];
     const user = tenant?.users.find((item) => item.id === staffId && item.role !== 'tenant_admin');
     if (!tenant || !user) return null;
@@ -541,9 +747,25 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
     if (payload.name !== undefined) user.name = payload.name.trim();
     if (payload.password) user.password_hash = bcrypt.hashSync(payload.password, 12);
-    if (payload.permissions) user.permissions = [...new Set(payload.permissions)].filter((permission) => staffPermissions.has(permission));
+    if (payload.role !== undefined) {
+      const role = tenant.roles?.find((item) => item.id === payload.role);
+      if (!role) return null;
+      user.role = role.id;
+      user.permission_overrides = { allow: [], deny: [] };
+    }
+    if (payload.permission_overrides) {
+      user.permission_overrides = this.normalizePermissionOverrides(payload.permission_overrides);
+    }
+    if (payload.permissions && user.role === 'receptionist') {
+      const receptionistRole = tenant.roles?.find((item) => item.id === user.role);
+      user.permissions = [...new Set(payload.permissions)].filter((permission) => receptionistRole?.permissions.includes(permission) && staffPermissions.has(permission));
+      user.permission_overrides = {
+        allow: [...user.permissions],
+        deny: (receptionistRole?.permissions || []).filter((permission) => !user.permissions!.includes(permission)),
+      };
+    }
     this.persistState();
-    return { id: user.id, tenant_id: user.tenant_id, name: user.name, email: user.email, role: user.role, permissions: user.permissions || [] };
+    return { ...this.listStaff(tenantId)?.find((member) => member.id === staffId) };
   }
 
   deleteStaff(tenantId: string, staffId: string) {
@@ -564,7 +786,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       admin_email: tenant.admin_email,
       admin_phone: tenant.admin_phone,
       plan: tenant.plan,
-      subscription_status: tenant.subscription_status,
+      subscription_status: this.effectiveSubscriptionStatus(tenant),
+      subscription_start_date: tenant.subscription_start_date,
+      subscription_end_date: tenant.subscription_end_date,
+      plan_features: this.getPlanFeatures(tenant.plan),
       billing_cycle: tenant.billing_cycle,
       monthly_price: this.monthlyRevenueFor(tenant),
       region: tenant.region,
@@ -582,7 +807,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       id: tenant.id,
       name: tenant.name,
       domain: tenant.domain,
-      subscription_status: tenant.subscription_status,
+      subscription_status: this.effectiveSubscriptionStatus(tenant),
     };
   }
 
@@ -597,18 +822,57 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       admin_email: tenant.admin_email,
       admin_phone: tenant.admin_phone,
       plan: tenant.plan,
-      subscription_status: tenant.subscription_status,
+      subscription_status: this.effectiveSubscriptionStatus(tenant),
+      subscription_start_date: tenant.subscription_start_date,
+      subscription_end_date: tenant.subscription_end_date,
+      plan_features: this.getPlanFeatures(tenant.plan),
       billing_cycle: tenant.billing_cycle,
       region: tenant.region,
     };
   }
 
   isTenantActive(tenantId: string) {
-    return this.tenants[tenantId]?.subscription_status === 'active';
+    const tenant = this.tenants[tenantId];
+    return Boolean(tenant && this.effectiveSubscriptionStatus(tenant) === 'active');
   }
 
   getPlans() {
-    return this.planCatalog;
+    return this.planCatalog.map((plan) => ({ ...plan, features: this.getPlanFeatures(plan.id) }));
+  }
+
+  getProductFeatures() {
+    return PRODUCT_FEATURES;
+  }
+
+  getPlanFeatures(planId: string) {
+    const plan = this.planCatalog.find((item) => item.id === planId);
+    return plan ? [...new Set(['dashboard', ...(plan.features || defaultProductFeatureIds)])] : [];
+  }
+
+  tenantHasFeature(tenantId: string, feature: string) {
+    const tenant = this.tenants[tenantId];
+    return Boolean(tenant && this.getPlanFeatures(tenant.plan).includes(feature));
+  }
+
+  private effectiveSubscriptionStatus(tenant: Tenant) {
+    const today = this.currentSubscriptionDate();
+    if (tenant.subscription_status === 'paused') return 'paused';
+    if (tenant.subscription_start_date && today < tenant.subscription_start_date) return 'scheduled';
+    if (tenant.subscription_end_date && today > tenant.subscription_end_date) return 'expired';
+    return 'active';
+  }
+
+  private currentSubscriptionDate() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  }
+
+  private calculateSubscriptionEndDate(startDate: string, billingCycle: string) {
+    const [year, month, day] = startDate.split('-').map(Number);
+    const monthOffset = billingCycle === 'annual' ? 12 : 1;
+    const targetMonth = new Date(Date.UTC(year, month - 1 + monthOffset, 1));
+    const lastDay = new Date(Date.UTC(targetMonth.getUTCFullYear(), targetMonth.getUTCMonth() + 1, 0)).getUTCDate();
+    targetMonth.setUTCDate(Math.min(day, lastDay) - 1);
+    return targetMonth.toISOString().slice(0, 10);
   }
 
   createClinicInterest(payload: Omit<ClinicInterest, 'id' | 'created_at'>): ClinicInterest | null {
@@ -639,6 +903,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       annual_price: annualPrice,
       clinic_limit: payload.clinic_limit === '' || payload.clinic_limit == null ? null : Number(payload.clinic_limit),
       user_limit: payload.user_limit === '' || payload.user_limit == null ? null : Number(payload.user_limit),
+      features: [...new Set(['dashboard', ...(payload.features || defaultProductFeatureIds)])].filter((feature: string) => allProductFeatureIds.includes(feature as any)),
     };
     this.planCatalog.push(plan);
     this.persistState();
@@ -660,6 +925,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
     if (payload.user_limit !== undefined) {
       plan.user_limit = payload.user_limit === '' || payload.user_limit == null ? null : Number(payload.user_limit);
+    }
+    if (payload.features !== undefined) {
+      plan.features = [...new Set(['dashboard', ...payload.features])].filter((feature: string) => allProductFeatureIds.includes(feature as any));
     }
     Object.values(this.tenants).filter((tenant) => tenant.plan === planId).forEach((tenant) => this.updateAdminPrice(tenant));
     this.persistState();
@@ -686,8 +954,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     return {
       summary: {
         tenants: tenants.length,
-        active: tenants.filter((tenant) => tenant.subscription_status === 'active').length,
-        paused: tenants.filter((tenant) => tenant.subscription_status === 'paused').length,
+        active: tenants.filter((tenant) => this.effectiveSubscriptionStatus(tenant) === 'active').length,
+        paused: tenants.filter((tenant) => this.effectiveSubscriptionStatus(tenant) === 'paused').length,
         monthly_recurring_revenue: tenants.reduce((total, tenant) => total + this.monthlyRevenueFor(tenant), 0),
       },
       plan_breakdown: planBreakdown,
@@ -709,6 +977,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const adminId = `user-${tenantId}`;
     const requestedPlan = String(payload.plan || 'growth').toLowerCase();
     const plan = this.planCatalog.some((item) => item.id === requestedPlan) ? requestedPlan : 'growth';
+    const billingCycle = payload.billing_cycle === 'annual' ? 'annual' : 'monthly';
+    const subscriptionStartDate = String(payload.subscription_start_date || this.currentSubscriptionDate());
     const temporaryPassword = String(randomInt(10000000, 100000000));
     const temporaryPasswordExpiresAt = Date.now() + 24 * 60 * 60 * 1000;
     const tenant: Tenant = {
@@ -720,7 +990,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       admin_phone: payload.admin_phone,
       plan,
       subscription_status: 'active',
-      billing_cycle: payload.billing_cycle === 'annual' ? 'annual' : 'monthly',
+      billing_cycle: billingCycle,
+      subscription_start_date: subscriptionStartDate,
+      subscription_end_date: String(payload.subscription_end_date || this.calculateSubscriptionEndDate(subscriptionStartDate, billingCycle)),
       monthly_price: 0,
       region: payload.region || 'India',
       users: [
@@ -737,8 +1009,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           employee_id: this.createEmployeeId(payload.tenant_name),
         },
       ],
+      roles: [{ id: 'receptionist', name: 'Receptionist', built_in: true, permissions: [...defaultStaffRolePermissions] }],
       patients: [],
       bookings: [],
+      waitlist: [],
       doctors: [],
       voice_agent: { ...defaultVoiceAgent },
       telephony: { ...defaultTelephony },
@@ -791,8 +1065,14 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     if (payload.plan !== undefined && this.planCatalog.some((item) => item.id === payload.plan)) {
       tenant.plan = payload.plan;
     }
+    const billingCycleChanged = (payload.billing_cycle === 'monthly' || payload.billing_cycle === 'annual') && payload.billing_cycle !== tenant.billing_cycle;
     if (payload.billing_cycle === 'monthly' || payload.billing_cycle === 'annual') {
       tenant.billing_cycle = payload.billing_cycle;
+    }
+    if (payload.subscription_start_date !== undefined) tenant.subscription_start_date = String(payload.subscription_start_date);
+    if (payload.subscription_end_date !== undefined) tenant.subscription_end_date = String(payload.subscription_end_date);
+    else if (billingCycleChanged) {
+      tenant.subscription_end_date = this.calculateSubscriptionEndDate(tenant.subscription_start_date || this.currentSubscriptionDate(), tenant.billing_cycle);
     }
     if (payload.subscription_status === 'active' || payload.subscription_status === 'paused') {
       tenant.subscription_status = payload.subscription_status;
@@ -2013,7 +2293,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   private monthlyRevenueFor(tenant: Tenant) {
     const plan = this.planCatalog.find((item) => item.id === tenant.plan);
-    if (!plan || tenant.subscription_status !== 'active') return 0;
+    if (!plan || this.effectiveSubscriptionStatus(tenant) !== 'active') return 0;
     return tenant.billing_cycle === 'annual' ? plan.annual_price / 12 : plan.monthly_price;
   }
 
@@ -2026,12 +2306,18 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     if (!tenant) return { statusCode: 404, message: 'Tenant not found' };
 
     const analytics = this.getTenantAnalytics(tenant, activityRange);
+    const clinicToday = new Intl.DateTimeFormat('en-CA', { timeZone: this.getVoiceAgent(tenantId).timezone || 'Asia/Kolkata' }).format(new Date());
 
     return {
       tenant_id: tenant.id,
+      clinic_today: clinicToday,
       tenant_name: tenant.name,
       admin_name: tenant.admin_name,
       plan: tenant.plan,
+      plan_features: this.getPlanFeatures(tenant.plan),
+      subscription_status: this.effectiveSubscriptionStatus(tenant),
+      subscription_start_date: tenant.subscription_start_date,
+      subscription_end_date: tenant.subscription_end_date,
       region: tenant.region,
       voice_agent: this.getVoiceAgent(tenantId),
       doctors: this.getDoctors(tenantId) || [],
@@ -2047,10 +2333,19 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         upcoming_appointments: analytics.summary.upcoming_appointments,
         completed_appointments: analytics.summary.completed_appointments,
         cancellation_rate: analytics.summary.cancellation_rate,
+        today_appointments: tenant.bookings.filter((booking) => booking.appointment_date === clinicToday && !['cancelled', 'no_show'].includes(booking.status)).length,
+        today_completed: tenant.bookings.filter((booking) => booking.appointment_date === clinicToday && booking.status === 'completed').length,
+        today_cancelled: tenant.bookings.filter((booking) => booking.appointment_date === clinicToday && booking.status === 'cancelled').length,
+      },
+      today_plan_summary: {
+        scheduled: tenant.bookings.filter((booking) => booking.appointment_date === clinicToday && !['cancelled', 'no_show'].includes(booking.status)).length,
+        completed: tenant.bookings.filter((booking) => booking.appointment_date === clinicToday && booking.status === 'completed').length,
+        cancelled: tenant.bookings.filter((booking) => booking.appointment_date === clinicToday && booking.status === 'cancelled').length,
       },
       analytics,
       patients: tenant.patients,
       bookings: tenant.bookings,
+      waitlist: tenant.waitlist || [],
     };
   }
 
@@ -2136,6 +2431,44 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   getPatients(tenantId: string) {
     return this.tenants[tenantId]?.patients || [];
+  }
+
+  getWaitlist(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    tenant.waitlist ||= [];
+    return tenant.waitlist;
+  }
+
+  addWaitlistEntry(tenantId: string, payload: Omit<WaitlistEntry, 'id' | 'status' | 'created_at'>) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    tenant.waitlist ||= [];
+    const entry: WaitlistEntry = {
+      id: `wait-${randomUUID()}`,
+      name: String(payload.name || '').trim(),
+      phone: String(payload.phone || '').trim(),
+      doctor_name: String(payload.doctor_name || '').trim(),
+      preferred_date: String(payload.preferred_date || '').trim(),
+      preferred_time: String(payload.preferred_time || '').trim(),
+      notes: String(payload.notes || '').trim(),
+      status: 'waiting',
+      created_at: new Date().toISOString(),
+    };
+    tenant.waitlist.push(entry);
+    this.persistState();
+    return entry;
+  }
+
+  updateWaitlistStatus(tenantId: string, entryId: string, status: WaitlistEntry['status']) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return { error: 'Clinic not found' };
+    tenant.waitlist ||= [];
+    const entry = tenant.waitlist.find((item) => item.id === entryId);
+    if (!entry) return { error: 'Waitlist entry not found' };
+    entry.status = status;
+    this.persistState();
+    return entry;
   }
 
   private ensureBookingPatient(tenant: Tenant, booking: Booking) {
@@ -2237,21 +2570,132 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  updateBookingStatus(tenantId: string, bookingId: string, status: string) {
+  updateBookingStatus(tenantId: string, bookingId: string, status: string, billing?: Omit<NonNullable<Booking['billing']>, 'transaction_id' | 'recorded_by' | 'payment_status' | 'updated_at' | 'reconciled_at' | 'reconciled_by'>, recordedBy?: string) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return { error: 'Tenant not found' };
     const booking = tenant.bookings.find((item) => item.id === bookingId);
     if (!booking) return { error: 'Appointment not found' };
     booking.status = status;
+    if (billing) {
+      const total = Math.max(0, Number(billing.consultation_fee) - Number(billing.discount_amount) + Number(billing.additional_charges));
+      const paid = Number(billing.amount_paid);
+      booking.billing = {
+        consultation_fee: Number(billing.consultation_fee),
+        discount_amount: Number(billing.discount_amount),
+        additional_charges: Number(billing.additional_charges),
+        amount_paid: paid,
+        payment_method: paid > 0 ? billing.payment_method : 'unpaid',
+        payment_reference: String(billing.payment_reference || '').trim(),
+        completion_notes: String(billing.completion_notes || '').trim(),
+        payment_proof_data_url: billing.payment_proof_data_url === undefined ? booking.billing?.payment_proof_data_url : (String(billing.payment_proof_data_url || '').trim() || undefined),
+        payment_proof_name: billing.payment_proof_name === undefined ? booking.billing?.payment_proof_name : (String(billing.payment_proof_name || '').trim().slice(0, 150) || undefined),
+        transaction_id: paid > 0 ? booking.billing?.transaction_id || `TXN-${randomUUID()}` : undefined,
+        recorded_by: String(recordedBy || 'Clinic staff').trim().slice(0, 254),
+        payment_status: paid <= 0 ? 'unpaid' : paid < total ? 'partial' : 'paid',
+        updated_at: new Date().toISOString(),
+        reconciled_at: undefined,
+        reconciled_by: undefined,
+      };
+    }
     this.persistState();
     return booking;
+  }
+
+  getTransactions(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    return tenant.bookings
+      .filter((booking) => booking.status === 'completed' && booking.billing)
+      .map((booking) => ({
+        appointment_id: booking.id,
+        patient_name: booking.patient_name,
+        phone_number: booking.phone_number,
+        doctor_name: booking.doctor_name,
+        appointment_date: booking.appointment_date,
+        appointment_time: booking.appointment_time,
+        reason: booking.reason || '',
+        ...booking.billing!,
+        total_amount: Math.max(0, booking.billing!.consultation_fee - booking.billing!.discount_amount + booking.billing!.additional_charges),
+        balance_due: Math.max(0, booking.billing!.consultation_fee - booking.billing!.discount_amount + booking.billing!.additional_charges - booking.billing!.amount_paid),
+      }))
+      .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')));
+  }
+
+  reconcileTransaction(tenantId: string, appointmentId: string, reconciledBy: string) {
+    const tenant = this.tenants[tenantId];
+    const booking = tenant?.bookings.find((item) => item.id === appointmentId);
+    if (!tenant) return { error: 'Tenant not found' };
+    if (booking?.status !== 'completed' || !booking.billing) return { error: 'Completed appointment billing was not found' };
+    booking.billing.reconciled_at = new Date().toISOString();
+    booking.billing.reconciled_by = String(reconciledBy || 'Clinic staff').slice(0, 254);
+    this.persistState();
+    return { appointment_id: appointmentId, reconciled_at: booking.billing.reconciled_at, reconciled_by: booking.billing.reconciled_by };
+  }
+
+  createPaymentChangeRequest(tenantId: string, appointmentId: string, requester: string, message: string, billing: NonNullable<PaymentChangeRequest['proposed_billing']>) {
+    const tenant = this.tenants[tenantId];
+    const booking = tenant?.bookings.find((item) => item.id === appointmentId);
+    if (!tenant) return { error: 'Tenant not found' };
+    if (booking?.status !== 'completed' || !booking.billing) return { error: 'Completed appointment billing was not found' };
+    tenant.payment_change_requests ||= [];
+    const request: PaymentChangeRequest = {
+      id: `BCR-${randomUUID()}`,
+      appointment_id: appointmentId,
+      requester: String(requester || 'Clinic staff').slice(0, 254),
+      message: String(message || '').trim().slice(0, 1000),
+      proposed_billing: { ...billing },
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    };
+    tenant.payment_change_requests.push(request);
+    this.persistState();
+    return request;
+  }
+
+  getPaymentChangeRequests(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    return tenant.payment_change_requests || [];
+  }
+
+  reviewPaymentChangeRequest(tenantId: string, requestId: string, status: 'approved' | 'rejected', reviewedBy: string) {
+    const tenant = this.tenants[tenantId];
+    const request = tenant?.payment_change_requests?.find((item) => item.id === requestId);
+    if (!tenant) return { error: 'Tenant not found' };
+    if (!request || request.status !== 'pending') return { error: 'Pending billing change request not found' };
+    if (status === 'approved') {
+      const result = this.updateBookingStatus(tenantId, request.appointment_id, 'completed', request.proposed_billing, reviewedBy);
+      if ('error' in result) return result;
+    }
+    request.status = status;
+    request.reviewed_at = new Date().toISOString();
+    request.reviewed_by = String(reviewedBy || 'Clinic admin').slice(0, 254);
+    this.persistState();
+    return request;
+  }
+
+  deleteTransaction(tenantId: string, appointmentId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return { error: 'Tenant not found' };
+    const booking = tenant.bookings.find((item) => item.id === appointmentId);
+    if (!booking?.billing) return { error: 'Payment record not found' };
+    booking.billing = undefined;
+    this.persistState();
+    return { deleted: true, appointment_id: appointmentId };
   }
 
   addPatient(tenantId: string, payload: any) {
     const tenant = this.tenants[tenantId];
     if (!tenant) return { statusCode: 404, message: 'Tenant not found' };
 
-    const patientId = `pat-${tenant.patients.length + 1001}`;
+    const usedPatientIds = new Set(tenant.patients.map((patient) => patient.id));
+    const highestPatientNumber = tenant.patients.reduce((highest, patient) => {
+      const match = /^pat-(\d+)$/.exec(String(patient.id || ''));
+      return match ? Math.max(highest, Number(match[1])) : highest;
+    }, 1000);
+    let nextPatientNumber = highestPatientNumber + 1;
+    while (usedPatientIds.has(`pat-${nextPatientNumber}`)) nextPatientNumber += 1;
+    const patientId = `pat-${nextPatientNumber}`;
     const patient = {
       id: patientId,
       tenant_id: tenantId,

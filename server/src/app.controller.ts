@@ -1,11 +1,12 @@
-import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, Req, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, Req, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { ArrayMaxSize, IsArray, IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, IsArray, IsByteLength, IsEmail, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { AppService } from './app.service';
+import { AppService, PRODUCT_FEATURES } from './app.service';
 import { AccessGuard } from './auth/access.guard';
-import { Permissions, Roles, TenantScoped } from './auth/access.decorator';
+import { Features, Permissions, Roles, TenantScoped } from './auth/access.decorator';
 
 class LoginDto {
   @IsEmail()
@@ -123,7 +124,7 @@ class TenantPasswordDto {
   password: string;
 }
 
-const STAFF_PERMISSION_OPTIONS = ['overview:view', 'agents:view', 'doctors:view', 'doctors:manage', 'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'reports:view'];
+const STAFF_PERMISSION_OPTIONS = ['overview:view', 'overview:today_plan', 'agents:view', 'doctors:view', 'doctors:manage', 'patients:view', 'patients:manage', 'appointments:view', 'appointments:manage', 'payments:view', 'payments:manage', 'payments:reconcile', 'reports:view'];
 class StaffCreateDto {
   @IsString() @MinLength(2) @MaxLength(120)
   name: string;
@@ -131,8 +132,12 @@ class StaffCreateDto {
   email: string;
   @IsString() @MinLength(10) @IsByteLength(10, 72)
   password: string;
-  @IsArray() @ArrayMaxSize(STAFF_PERMISSION_OPTIONS.length) @IsIn(STAFF_PERMISSION_OPTIONS, { each: true })
-  permissions: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(STAFF_PERMISSION_OPTIONS.length) @IsIn(STAFF_PERMISSION_OPTIONS, { each: true })
+  permissions?: string[];
+  @IsOptional() @IsString() @Matches(/^[a-z][a-z0-9_-]{1,39}$/)
+  role?: string;
+  @IsOptional() @IsObject()
+  permission_overrides?: { allow?: string[]; deny?: string[] };
 }
 class StaffUpdateDto {
   @IsOptional() @IsString() @MinLength(2) @MaxLength(120)
@@ -143,6 +148,20 @@ class StaffUpdateDto {
   password?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(STAFF_PERMISSION_OPTIONS.length) @IsIn(STAFF_PERMISSION_OPTIONS, { each: true })
   permissions?: string[];
+  @IsOptional() @IsString() @Matches(/^[a-z][a-z0-9_-]{1,39}$/)
+  role?: string;
+  @IsOptional() @IsObject()
+  permission_overrides?: { allow?: string[]; deny?: string[] };
+}
+
+const ROLE_PERMISSION_OPTIONS = STAFF_PERMISSION_OPTIONS;
+class ClinicRoleDto {
+  @IsOptional() @IsString() @Matches(/^[a-z][a-z0-9_-]{1,39}$/)
+  id?: string;
+  @IsOptional() @IsString() @MinLength(2) @MaxLength(60)
+  name?: string;
+  @IsArray() @ArrayMaxSize(ROLE_PERMISSION_OPTIONS.length) @IsIn(ROLE_PERMISSION_OPTIONS, { each: true })
+  permissions: string[];
 }
 
 class SubscriptionUpdateDto {
@@ -152,6 +171,10 @@ class SubscriptionUpdateDto {
   billing_cycle?: string;
   @IsOptional() @IsIn(['active', 'paused'])
   subscription_status?: string;
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  subscription_start_date?: string;
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  subscription_end_date?: string;
 }
 
 class PlanDto {
@@ -167,6 +190,8 @@ class PlanDto {
   clinic_limit?: number | null;
   @IsOptional() @Min(1)
   user_limit?: number | null;
+  @IsOptional() @IsArray() @ArrayMaxSize(PRODUCT_FEATURES.length) @IsIn(PRODUCT_FEATURES.map(({ id }) => id), { each: true })
+  features?: string[];
 }
 
 class PatientDto {
@@ -200,8 +225,65 @@ class DoctorUpdateDto {
   status?: string;
 }
 
+class AppointmentBillingDto {
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(10000000)
+  consultation_fee: number;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(10000000)
+  discount_amount: number;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(10000000)
+  additional_charges: number;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(10000000)
+  amount_paid: number;
+  @IsIn(['cash', 'upi', 'card', 'bank_transfer', 'other', 'unpaid'])
+  payment_method: 'cash' | 'upi' | 'card' | 'bank_transfer' | 'other' | 'unpaid';
+  @IsOptional() @IsString() @MaxLength(120)
+  payment_reference?: string;
+  @IsOptional() @IsString() @MaxLength(1000)
+  completion_notes?: string;
+  @IsOptional() @IsString() @MaxLength(700000) @ValidateIf((_object, value) => typeof value === 'string' && value.length > 0) @Matches(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/)
+  payment_proof_data_url?: string;
+  @IsOptional() @IsString() @MaxLength(150)
+  payment_proof_name?: string;
+}
+
 class AppointmentStatusDto {
   @IsIn(['confirmed', 'completed', 'cancelled', 'no_show'])
+  status: string;
+  @IsOptional() @ValidateNested() @Type(() => AppointmentBillingDto)
+  billing?: AppointmentBillingDto;
+}
+
+class PaymentChangeRequestDto {
+  @IsString() @MinLength(1) @MaxLength(120)
+  appointment_id: string;
+  @IsString() @MaxLength(1000)
+  message: string;
+  @ValidateNested() @Type(() => AppointmentBillingDto)
+  billing: AppointmentBillingDto;
+}
+
+class PaymentChangeReviewDto {
+  @IsIn(['approved', 'rejected'])
+  status: 'approved' | 'rejected';
+}
+
+class WaitlistEntryDto {
+  @IsString() @MinLength(2) @MaxLength(120)
+  name: string;
+  @IsString() @Matches(/^\+?[\d\s()-]{7,20}$/)
+  phone: string;
+  @IsOptional() @IsString() @MaxLength(120)
+  doctor_name?: string;
+  @ValidateIf((_object, value) => value !== undefined && value !== '') @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  preferred_date?: string;
+  @ValidateIf((_object, value) => value !== undefined && value !== '') @IsString() @Matches(/^\d{2}:\d{2}$/)
+  preferred_time?: string;
+  @IsOptional() @IsString() @MaxLength(500)
+  notes?: string;
+}
+
+class WaitlistStatusDto {
+  @IsIn(['waiting', 'contacted', 'booked', 'closed'])
   status: string;
 }
 
@@ -389,7 +471,7 @@ export class AppController {
 
   @Get('api/public/plans')
   getPublicPlans() {
-    return { plans: this.appService.getPlans().map(({ id, name, monthly_price, annual_price, clinic_limit, user_limit }) => ({ id, name, monthly_price, annual_price, clinic_limit, user_limit })) };
+    return { plans: this.appService.getPlans().map(({ id, name, monthly_price, annual_price, clinic_limit, user_limit, features }) => ({ id, name, monthly_price, annual_price, clinic_limit, user_limit, features })) };
   }
 
   @Post('api/public/clinic-interest')
@@ -426,7 +508,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @Roles('super_admin')
   listPlans() {
-    return { plans: this.appService.getPlans() };
+    return { plans: this.appService.getPlans(), features: PRODUCT_FEATURES };
   }
 
   @Post('api/plans')
@@ -716,6 +798,17 @@ export class AppController {
     if (body.billing_cycle && !['monthly', 'annual'].includes(body.billing_cycle)) {
       throw new BadRequestException('Billing cycle must be monthly or annual');
     }
+    const currentTenant = this.appService.getTenantDetails(tenantId);
+    if (!currentTenant) throw new NotFoundException('Tenant not found');
+    const nextStartDate = body.subscription_start_date ?? currentTenant.subscription_start_date;
+    const nextEndDate = body.subscription_end_date ?? currentTenant.subscription_end_date;
+    const isValidDate = (value?: string) => !value || (/^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value);
+    if (!isValidDate(nextStartDate) || !isValidDate(nextEndDate)) {
+      throw new BadRequestException('Subscription dates must be valid calendar dates');
+    }
+    if (nextStartDate && nextEndDate && nextEndDate < nextStartDate) {
+      throw new BadRequestException('Subscription end date must be on or after its start date');
+    }
     const tenant = this.appService.updateTenant(tenantId, body);
     if (!tenant) throw new NotFoundException('Tenant not found');
     return { tenant, message: 'Subscription updated successfully' };
@@ -734,19 +827,45 @@ export class AppController {
   @TenantScoped()
   getDashboard(@Param('tenantId') tenantId: string, @Query('activity_range') activityRange?: string, @Req() request?: any) {
     const dashboard = this.appService.getDashboard(tenantId, activityRange);
-    if (request?.user?.role === 'tenant_admin') return dashboard;
     const permissions = new Set<string>(request?.user?.permissions || []);
-    const canSeeOverview = permissions.has('overview:view');
+    const clinicAdmin = request?.user?.role === 'tenant_admin';
+    const canSeeOverview = clinicAdmin || permissions.has('overview:view');
     const canSeeReports = permissions.has('reports:view');
+    const hasFeature = (feature: string) => this.appService.tenantHasFeature(tenantId, feature);
+    const canSeePaymentTransactions = hasFeature('appointments') && (
+      (hasFeature('payment_transactions') && (clinicAdmin || permissions.has('payments:view') || permissions.has('payments:manage')))
+      || (hasFeature('fee_reconciliation') && (clinicAdmin || permissions.has('payments:manage') || permissions.has('payments:reconcile')))
+    );
+    const canSeeTodayPlan = hasFeature('appointments') && !clinicAdmin && permissions.has('overview:today_plan');
+    const todayPlanBookings = canSeeTodayPlan
+      ? dashboard.bookings
+        .filter((booking) => booking.appointment_date === dashboard.clinic_today && !['cancelled', 'no_show'].includes(booking.status))
+        .map(({ patient_name, doctor_name, appointment_date, appointment_time, status }) => ({ patient_name, doctor_name, appointment_date, appointment_time, status }))
+      : undefined;
     return {
       ...dashboard,
-      voice_agent: permissions.has('agents:view') ? dashboard.voice_agent : undefined,
-      telephony: permissions.has('agents:view') ? dashboard.telephony : undefined,
-      doctors: permissions.has('doctors:view') || permissions.has('doctors:manage') ? dashboard.doctors : [],
-      patients: permissions.has('patients:view') || permissions.has('patients:manage') || canSeeReports ? dashboard.patients : [],
-      bookings: permissions.has('appointments:view') || permissions.has('appointments:manage') || canSeeReports ? dashboard.bookings : [],
-      summary: canSeeOverview || canSeeReports ? dashboard.summary : undefined,
-      analytics: canSeeOverview || canSeeReports ? dashboard.analytics : undefined,
+      voice_agent: hasFeature('ai_receptionist') && (clinicAdmin || permissions.has('agents:view')) ? dashboard.voice_agent : undefined,
+      telephony: hasFeature('ai_receptionist') && (clinicAdmin || permissions.has('agents:view')) ? dashboard.telephony : undefined,
+      doctors: hasFeature('doctors') && (clinicAdmin || permissions.has('doctors:view') || permissions.has('doctors:manage')) ? dashboard.doctors : [],
+      patients: hasFeature('patients') && (clinicAdmin || permissions.has('patients:view') || permissions.has('patients:manage') || canSeeReports) ? dashboard.patients : [],
+      bookings: hasFeature('appointments') && (clinicAdmin || permissions.has('appointments:view') || permissions.has('appointments:manage') || canSeeReports) ? dashboard.bookings : [],
+      transactions: canSeePaymentTransactions ? this.appService.getTransactions(tenantId) : undefined,
+      payment_change_requests: clinicAdmin ? this.appService.getPaymentChangeRequests(tenantId) : undefined,
+      waitlist: hasFeature('appointments') && (clinicAdmin || permissions.has('appointments:view') || permissions.has('appointments:manage')) ? dashboard.waitlist : [],
+      summary: canSeeOverview || canSeeReports ? {
+        ...dashboard.summary,
+        patients: hasFeature('patients') ? dashboard.summary.patients : undefined,
+        active_patients: hasFeature('patients') ? dashboard.summary.active_patients : undefined,
+        appointments: hasFeature('appointments') ? dashboard.summary.appointments : undefined,
+        upcoming_appointments: hasFeature('appointments') ? dashboard.summary.upcoming_appointments : undefined,
+        completed_appointments: hasFeature('appointments') ? dashboard.summary.completed_appointments : undefined,
+        cancellation_rate: hasFeature('appointments') ? dashboard.summary.cancellation_rate : undefined,
+        ...(canSeeTodayPlan ? {} : { today_appointments: undefined, today_completed: undefined, today_cancelled: undefined }),
+      } : undefined,
+      analytics: hasFeature('reports') && (clinicAdmin || canSeeOverview || canSeeReports) ? dashboard.analytics : undefined,
+      plan_features: this.appService.getPlanFeatures(dashboard.plan),
+      today_plan_summary: undefined,
+      today_plan: canSeeTodayPlan ? { bookings: todayPlanBookings, summary: dashboard.today_plan_summary } : undefined,
     };
   }
 
@@ -754,17 +873,68 @@ export class AppController {
   @UseGuards(AccessGuard)
   @Roles('tenant_admin')
   @TenantScoped()
+  @Features('staff_accounts')
   listStaff(@Param('tenantId') tenantId: string) {
     const staff = this.appService.listStaff(tenantId);
     if (!staff) throw new NotFoundException('Clinic not found');
     return { staff };
   }
 
+  @Get('api/tenant/:tenantId/roles')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  @Features('staff_accounts')
+  listClinicRoles(@Param('tenantId') tenantId: string) {
+    const roles = this.appService.listClinicRoles(tenantId);
+    if (!roles) throw new NotFoundException('Clinic not found');
+    return { roles, permissions: STAFF_PERMISSION_OPTIONS };
+  }
+
+  @Post('api/tenant/:tenantId/roles')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  @Features('staff_accounts')
+  createClinicRole(@Param('tenantId') tenantId: string, @Body() body: ClinicRoleDto) {
+    if (!body.id || !body.name) throw new BadRequestException('Role ID and name are required');
+    const role = this.appService.createClinicRole(tenantId, body as any);
+    if (role === null) throw new NotFoundException('Clinic not found');
+    if (!role) throw new ConflictException('A role with this ID already exists or its details are invalid');
+    return { role, message: 'Clinic role created.' };
+  }
+
+  @Put('api/tenant/:tenantId/roles/:roleId')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  @Features('staff_accounts')
+  updateClinicRole(@Param('tenantId') tenantId: string, @Param('roleId') roleId: string, @Body() body: ClinicRoleDto) {
+    const role = this.appService.updateClinicRole(tenantId, roleId, body as any);
+    if (!role) throw new NotFoundException('Clinic role not found');
+    return { role, message: 'Clinic role updated.' };
+  }
+
+  @Delete('api/tenant/:tenantId/roles/:roleId')
+  @UseGuards(AccessGuard)
+  @Roles('tenant_admin')
+  @TenantScoped()
+  @Features('staff_accounts')
+  deleteClinicRole(@Param('tenantId') tenantId: string, @Param('roleId') roleId: string) {
+    const result = this.appService.deleteClinicRole(tenantId, roleId);
+    if (result === 'not_found') throw new NotFoundException('Clinic role not found');
+    if (result === 'protected') throw new BadRequestException('The built-in receptionist role cannot be deleted');
+    if (result === 'in_use') throw new ConflictException('Move staff members to another role before deleting this role');
+    return { deleted: true, role_id: roleId };
+  }
+
   @Post('api/tenant/:tenantId/staff')
   @UseGuards(AccessGuard)
   @Roles('tenant_admin')
   @TenantScoped()
+  @Features('staff_accounts')
   createStaff(@Param('tenantId') tenantId: string, @Body() body: StaffCreateDto) {
+    if (body.role && !this.appService.isStaffRole(tenantId, body.role)) throw new BadRequestException('Select a role configured for this clinic');
     const staff = this.appService.createStaff(tenantId, body);
     if (staff === null) throw new NotFoundException('Clinic not found');
     if (!staff) throw new ConflictException('An account with this email already exists');
@@ -775,7 +945,9 @@ export class AppController {
   @UseGuards(AccessGuard)
   @Roles('tenant_admin')
   @TenantScoped()
+  @Features('staff_accounts')
   updateStaff(@Param('tenantId') tenantId: string, @Param('staffId') staffId: string, @Body() body: StaffUpdateDto) {
+    if (body.role && !this.appService.isStaffRole(tenantId, body.role)) throw new BadRequestException('Select a role configured for this clinic');
     const staff = this.appService.updateStaff(tenantId, staffId, body);
     if (staff === null) throw new NotFoundException('Staff account not found');
     if (!staff) throw new ConflictException('An account with this email already exists');
@@ -786,6 +958,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @Roles('tenant_admin')
   @TenantScoped()
+  @Features('staff_accounts')
   deleteStaff(@Param('tenantId') tenantId: string, @Param('staffId') staffId: string) {
     if (!this.appService.deleteStaff(tenantId, staffId)) throw new NotFoundException('Staff account not found');
     return { deleted: true, staff_id: staffId };
@@ -795,6 +968,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('agents:manage')
+  @Features('ai_receptionist')
   updateVoiceAgent(@Param('tenantId') tenantId: string, @Body() body: any) {
     const settings = this.appService.updateVoiceAgent(tenantId, body || {});
     if (settings === null) throw new NotFoundException('Clinic not found');
@@ -806,6 +980,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('doctors:view', 'doctors:manage')
+  @Features('doctors')
   getDoctors(@Param('tenantId') tenantId: string) {
     const doctors = this.appService.getDoctors(tenantId);
     if (!doctors) throw new NotFoundException('Clinic not found');
@@ -816,6 +991,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('doctors:manage')
+  @Features('doctors')
   async addDoctor(@Param('tenantId') tenantId: string, @Body() body: DoctorCreateDto) {
     const doctor = await this.appService.addDoctor(tenantId, body);
     if (!doctor) throw new NotFoundException('Clinic not found');
@@ -827,6 +1003,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('doctors:manage')
+  @Features('doctors')
   async updateDoctor(@Param('tenantId') tenantId: string, @Param('doctorId') doctorId: string, @Body() body: DoctorUpdateDto) {
     const doctor = await this.appService.updateDoctor(tenantId, doctorId, body);
     if (!doctor) throw new NotFoundException('Doctor not found');
@@ -838,6 +1015,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('agents:view')
+  @Features('ai_receptionist')
   previewVoiceAgent(@Param('tenantId') tenantId: string, @Body() body: any) {
     const preview = this.appService.previewVoiceAgent(tenantId, String(body?.caller_message || ''));
     if (!preview) throw new NotFoundException('Clinic not found');
@@ -848,6 +1026,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('agents:manage')
+  @Features('ai_receptionist')
   async generateVoiceAgentFaqSuggestions(@Param('tenantId') tenantId: string) {
     const result = await this.appService.generateVoiceAgentFaqSuggestions(tenantId);
     if (!result) throw new NotFoundException('Clinic not found');
@@ -859,6 +1038,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('patients:view', 'patients:manage')
+  @Features('patients')
   getPatients(@Param('tenantId') tenantId: string) {
     return { patients: this.appService.getPatients(tenantId) };
   }
@@ -867,6 +1047,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('patients:manage')
+  @Features('patients')
   addPatient(@Param('tenantId') tenantId: string, @Body() body: PatientDto) {
     return { patient: this.appService.addPatient(tenantId, body), message: 'Patient created' };
   }
@@ -875,6 +1056,7 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('patients:manage')
+  @Features('patients')
   updatePatient(
     @Param('tenantId') tenantId: string,
     @Param('patientId') patientId: string,
@@ -887,32 +1069,136 @@ export class AppController {
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('patients:manage')
+  @Features('patients')
   deletePatient(@Param('tenantId') tenantId: string, @Param('patientId') patientId: string) {
     return this.appService.deletePatient(tenantId, patientId);
+  }
+
+  @Delete('api/tenant/:tenantId/payments/:appointmentId')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Roles('tenant_admin')
+  @Features('payment_transactions')
+  deletePayment(@Param('tenantId') tenantId: string, @Param('appointmentId') appointmentId: string) {
+    if (!this.appService.tenantHasFeature(tenantId, 'appointments')) throw new ForbiddenException('Appointments are not included in this clinic plan');
+    const result = this.appService.deleteTransaction(tenantId, appointmentId);
+    if ('error' in result) throw new NotFoundException(result.error);
+    return { ...result, message: 'Payment record deleted' };
+  }
+
+  @Patch('api/tenant/:tenantId/payments/:appointmentId/reconcile')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Permissions('payments:reconcile', 'payments:manage')
+  @Features('fee_reconciliation')
+  reconcilePayment(@Param('tenantId') tenantId: string, @Param('appointmentId') appointmentId: string, @Req() request: any) {
+    if (!this.appService.tenantHasFeature(tenantId, 'appointments')) throw new ForbiddenException('Appointments are not included in this clinic plan');
+    const actor = request?.user?.email || request?.user?.sub || 'Clinic staff';
+    const result = this.appService.reconcileTransaction(tenantId, appointmentId, actor);
+    if ('error' in result) throw new NotFoundException(result.error);
+    return { reconciliation: result, message: 'Ledger entry matched' };
+  }
+
+  @Post('api/tenant/:tenantId/payment-change-requests')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Permissions('payments:reconcile', 'payments:manage')
+  @Features('fee_reconciliation')
+  createPaymentChangeRequest(@Param('tenantId') tenantId: string, @Body() body: PaymentChangeRequestDto, @Req() request: any) {
+    if (!this.appService.tenantHasFeature(tenantId, 'appointments')) throw new ForbiddenException('Appointments are not included in this clinic plan');
+    if (body.billing.discount_amount > body.billing.consultation_fee) throw new BadRequestException('Discount cannot exceed the consultation fee');
+    if (body.billing.amount_paid > body.billing.consultation_fee - body.billing.discount_amount + body.billing.additional_charges) throw new BadRequestException('Amount paid cannot exceed the final appointment amount');
+    if (body.billing.amount_paid > 0 && body.billing.payment_method === 'unpaid') throw new BadRequestException('Choose a payment method when money has been received');
+    const requester = request?.user?.email || request?.user?.sub || 'Clinic staff';
+    const result = this.appService.createPaymentChangeRequest(tenantId, body.appointment_id, requester, body.message, body.billing);
+    if ('error' in result) throw new NotFoundException(result.error);
+    return { request: result, message: 'Billing change request sent to the clinic admin for approval' };
+  }
+
+  @Patch('api/tenant/:tenantId/payment-change-requests/:requestId')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Roles('tenant_admin')
+  @Features('fee_reconciliation')
+  reviewPaymentChangeRequest(@Param('tenantId') tenantId: string, @Param('requestId') requestId: string, @Body() body: PaymentChangeReviewDto, @Req() request: any) {
+    if (!this.appService.tenantHasFeature(tenantId, 'appointments')) throw new ForbiddenException('Appointments are not included in this clinic plan');
+    const reviewer = request?.user?.email || request?.user?.sub || 'Clinic admin';
+    const result = this.appService.reviewPaymentChangeRequest(tenantId, requestId, body.status, reviewer);
+    if ('error' in result) throw new NotFoundException(result.error);
+    return { request: result, message: body.status === 'approved' ? 'Billing change approved and applied' : 'Billing change request rejected' };
   }
 
   @Patch('api/tenant/:tenantId/appointments/:appointmentId')
   @UseGuards(AccessGuard)
   @TenantScoped()
-  @Permissions('appointments:manage')
+  @Permissions('appointments:manage', 'payments:manage')
+  @Features('appointments')
   updateAppointmentStatus(
     @Param('tenantId') tenantId: string,
     @Param('appointmentId') appointmentId: string,
     @Body() body: AppointmentStatusDto,
+    @Req() request: any,
   ) {
+    const isClinicAdmin = request?.user?.role === 'tenant_admin';
+    const canManageAppointments = isClinicAdmin || request?.user?.permissions?.includes('appointments:manage');
+    const canManagePayments = isClinicAdmin || request?.user?.permissions?.includes('payments:manage');
+    if (!isClinicAdmin && body.status !== 'completed' && !canManageAppointments) {
+      throw new ForbiddenException('Your clinic account does not have permission to update appointments');
+    }
+    if (body.billing && body.status !== 'completed') throw new BadRequestException('Billing can only be saved while completing an appointment');
+    if (body.status === 'completed' && !body.billing) throw new BadRequestException('Billing details are required to complete an appointment');
+    if (body.billing && !canManagePayments) {
+      throw new ForbiddenException('Your clinic account does not have permission to record payment details');
+    }
+    if (body.status === 'completed' && !canManagePayments) {
+      throw new ForbiddenException('Your clinic account does not have permission to complete and bill this appointment');
+    }
     const allowedStatuses = ['confirmed', 'completed', 'cancelled', 'no_show'];
     if (!allowedStatuses.includes(body.status)) {
       throw new BadRequestException(`Appointment status must be one of: ${allowedStatuses.join(', ')}`);
     }
-    const result = this.appService.updateBookingStatus(tenantId, appointmentId, body.status);
+    if (body.billing && body.billing.discount_amount > body.billing.consultation_fee) {
+      throw new BadRequestException('Discount cannot exceed the consultation fee');
+    }
+    if (body.billing && body.billing.amount_paid > body.billing.consultation_fee - body.billing.discount_amount + body.billing.additional_charges) {
+      throw new BadRequestException('Amount paid cannot exceed the final appointment amount');
+    }
+    if (body.billing && body.billing.amount_paid > 0 && body.billing.payment_method === 'unpaid') {
+      throw new BadRequestException('Choose a payment method when money has been received');
+    }
+    const actor = request?.user?.email || request?.user?.sub || 'Clinic staff';
+    const result = this.appService.updateBookingStatus(tenantId, appointmentId, body.status, body.billing, actor);
     if ('error' in result) throw new NotFoundException(result.error);
     return { appointment: result, message: 'Appointment status updated' };
+  }
+
+  @Post('api/tenant/:tenantId/waitlist')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Permissions('appointments:manage')
+  @Features('appointments')
+  addWaitlistEntry(@Param('tenantId') tenantId: string, @Body() body: WaitlistEntryDto) {
+    const entry = this.appService.addWaitlistEntry(tenantId, body);
+    if (!entry) throw new NotFoundException('Clinic not found');
+    return { entry, message: 'Patient added to the cancellation waitlist.' };
+  }
+
+  @Patch('api/tenant/:tenantId/waitlist/:entryId')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Permissions('appointments:manage')
+  @Features('appointments')
+  updateWaitlistStatus(@Param('tenantId') tenantId: string, @Param('entryId') entryId: string, @Body() body: WaitlistStatusDto) {
+    const result = this.appService.updateWaitlistStatus(tenantId, entryId, body.status as any);
+    if ('error' in result) throw new NotFoundException(result.error);
+    return { entry: result, message: 'Waitlist status updated.' };
   }
 
   @Post('api/tenant/:tenantId/appointments')
   @UseGuards(AccessGuard)
   @TenantScoped()
   @Permissions('appointments:manage')
+  @Features('appointments')
   async createManualAppointment(@Param('tenantId') tenantId: string, @Body() body: ManualAppointmentDto) {
     const appointment = await this.appService.addBooking(tenantId, { ...body, id: `APT-${randomUUID()}`, status: 'confirmed' });
     if (!appointment) throw new NotFoundException('Clinic not found');

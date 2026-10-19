@@ -10,8 +10,13 @@ const API_URL = import.meta.env.VITE_API_URL || (
 );
 const emptyPatient = { name: '', phone: '', email: '', age: '', notes: '', status: 'active' };
 const emptyBooking = { patient_name: '', phone_number: '', doctor_name: '', appointment_date: '', appointment_time: '', reason: 'General consultation' };
+const emptyWaitlistEntry = { name: '', phone: '', doctor_name: '', preferred_date: '', preferred_time: '', notes: '' };
 const emptyTenant = { tenant_name: '', tenant_domain: '', admin_name: '', admin_email: '', admin_phone: '', plan: 'growth', billing_cycle: 'monthly', subscription_status: 'active', region: 'India' };
-const emptyPlan = { id: '', name: '', monthly_price: '', annual_price: '', clinic_limit: '', user_limit: '' };
+const emptyPlan = { id: '', name: '', monthly_price: '', annual_price: '', clinic_limit: '', user_limit: '', features: ['dashboard'] };
+const BILLING_PRODUCT_FEATURES = [
+  { id: 'payment_transactions', label: 'Payments & transactions', description: 'Completed-visit billing ledger, payment details, and outstanding balances.' },
+  { id: 'fee_reconciliation', label: 'Fees & ledger reconciliation', description: 'Daily and monthly completed-visit reconciliation with admin-approved billing corrections.' },
+];
 const defaultVoiceAgent = { enabled: true, availability: 'business_hours', open_time: '09:00', close_time: '18:00', timezone: 'Asia/Kolkata', appointment_duration_minutes: 30, clinic_context: { address: '', services: [], doctors: [], fees: '', languages: ['Hindi', 'Hinglish', 'English'], instructions: '', faqs: [] } };
 const emptyTelephony = { phone_number: '', account_sid: '', app_id: '', region: 'mumbai', enabled: false, exotel_api_key: '', exotel_api_token: '', sarvam_org_id: '', sarvam_workspace_id: '', sarvam_agent_id: '', sarvam_agent_version: '', sarvam_connection_id: '' };
 const telephonyConfigFields = ['phone_number', 'account_sid', 'app_id', 'region', 'enabled', 'exotel_voicebot_id', 'sarvam_org_id', 'sarvam_workspace_id', 'sarvam_agent_id', 'sarvam_agent_version', 'sarvam_connection_id'];
@@ -20,23 +25,39 @@ const providerTelephonyDefaults = { sarvam: { ...emptyProviderTelephony }, exote
 const emptyClinicInterest = { clinic_name: '', contact_name: '', email: '', phone: '', plan: 'growth' };
 const STAFF_PERMISSION_GROUPS = [
   { label: 'Overview', view: 'overview:view' },
+  { label: 'Today’s clinic plan', view: 'overview:today_plan' },
   { label: 'AI workflow', view: 'agents:view' },
   { label: 'Doctors', view: 'doctors:view', manage: 'doctors:manage' },
   { label: 'Patients', view: 'patients:view', manage: 'patients:manage' },
   { label: 'Appointments', view: 'appointments:view', manage: 'appointments:manage' },
+  { label: 'Payments & transactions', view: 'payments:view', manage: 'payments:manage', reconcile: 'payments:reconcile' },
   { label: 'Reports', view: 'reports:view' },
 ];
-const availableClinicViews = (user) => {
-  if (!user || user.role === 'tenant_admin') return ['overview', 'agents', 'doctors', 'patients', 'appointments', 'reports'];
+const emptyClinicRole = { id: '', name: '', permissions: [] };
+const emptyPermissionOverrides = { allow: [], deny: [] };
+const availableClinicViews = (user, planFeatures) => {
+  const included = (feature) => !Array.isArray(planFeatures) || planFeatures.includes(feature);
+  if (!user || user.role === 'tenant_admin') return [
+    'overview', included('ai_receptionist') && 'agents', included('doctors') && 'doctors', included('patients') && 'patients', included('appointments') && 'appointments', included('appointments') && included('payment_transactions') && 'payments', included('appointments') && included('fee_reconciliation') && 'fees', included('reports') && 'reports',
+  ].filter(Boolean);
   const permissions = new Set(user.permissions || []);
   return [
-    permissions.has('overview:view') && 'overview',
-    permissions.has('agents:view') && 'agents',
-    (permissions.has('doctors:view') || permissions.has('doctors:manage')) && 'doctors',
-    (permissions.has('patients:view') || permissions.has('patients:manage')) && 'patients',
-    (permissions.has('appointments:view') || permissions.has('appointments:manage')) && 'appointments',
-    permissions.has('reports:view') && 'reports',
+    (permissions.has('overview:view') || permissions.has('overview:today_plan')) && 'overview',
+    included('ai_receptionist') && permissions.has('agents:view') && 'agents',
+    included('doctors') && (permissions.has('doctors:view') || permissions.has('doctors:manage')) && 'doctors',
+    included('patients') && (permissions.has('patients:view') || permissions.has('patients:manage')) && 'patients',
+    included('appointments') && (permissions.has('appointments:view') || permissions.has('appointments:manage')) && 'appointments',
+    included('appointments') && included('payment_transactions') && (permissions.has('payments:view') || permissions.has('payments:manage')) && 'payments',
+    included('appointments') && included('fee_reconciliation') && (permissions.has('payments:reconcile') || permissions.has('payments:manage')) && 'fees',
+    included('reports') && permissions.has('reports:view') && 'reports',
   ].filter(Boolean);
+};
+const subscriptionEndDate = (startDate, billingCycle) => {
+  const [year, month, day] = startDate.split('-').map(Number);
+  const nextMonth = new Date(Date.UTC(year, month - 1 + (billingCycle === 'annual' ? 12 : 1), 1));
+  const lastDay = new Date(Date.UTC(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth() + 1, 0)).getUTCDate();
+  nextMonth.setUTCDate(Math.min(day, lastDay) - 1);
+  return nextMonth.toISOString().slice(0, 10);
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -53,8 +74,33 @@ const STAFF_TABLE_COLUMNS = [
   { key: 'name', label: 'Name', value: (member) => member.name },
   { key: 'email', label: 'Login email', value: (member) => member.email },
   { key: 'role', label: 'Role', value: (member) => member.role },
-  { key: 'permissions', label: 'Granted access', value: (member) => (member.permissions || []).map((permission) => permission.split(':').join(' ')).join(' · ') || 'No sections assigned' },
 ];
+const TRANSACTION_TABLE_COLUMNS = [
+  { key: 'transaction_id', label: 'Transaction ID' },
+  { key: 'appointment_id', label: 'Appointment ID' },
+  { key: 'patient_name', label: 'Patient' },
+  { key: 'phone_number', label: 'Phone' },
+  { key: 'doctor_name', label: 'Doctor' },
+  { key: 'appointment_date', label: 'Visit date' },
+  { key: 'appointment_time', label: 'Visit time' },
+  { key: 'reason', label: 'Visit reason' },
+  { key: 'consultation_fee', label: 'Consultation fee' },
+  { key: 'discount_amount', label: 'Discount' },
+  { key: 'additional_charges', label: 'Extra charges' },
+  { key: 'total_amount', label: 'Total bill' },
+  { key: 'amount_paid', label: 'Received' },
+  { key: 'balance_due', label: 'Balance due' },
+  { key: 'payment_method', label: 'Payment method' },
+  { key: 'payment_status', label: 'Payment status' },
+  { key: 'payment_reference', label: 'Payment reference' },
+  { key: 'payment_proof_name', label: 'Payment document' },
+  { key: 'recorded_by', label: 'Recorded by' },
+  { key: 'updated_at', label: 'Recorded / updated at' },
+  { key: 'completion_notes', label: 'Checkout notes' },
+  { key: 'reconciled_by', label: 'Reconciled by' },
+  { key: 'reconciled_at', label: 'Reconciled at' },
+];
+const DEFAULT_TRANSACTION_COLUMNS = ['transaction_id', 'patient_name', 'appointment_date', 'total_amount', 'amount_paid', 'balance_due', 'payment_status', 'recorded_by', 'updated_at'];
 
 function useListPagination(items, resetKey = '') {
   const [page, setPage] = useState(1);
@@ -241,8 +287,20 @@ function App() {
   const [tenantData, setTenantData] = useState(null);
   const [patients, setPatients] = useState([]);
   const [bookings, setBookings] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [transactionQuery, setTransactionQuery] = useState('');
+  const [transactionStatusFilter, setTransactionStatusFilter] = useState('all');
+  const [transactionMethodFilter, setTransactionMethodFilter] = useState('all');
+  const [transactionDateFilter, setTransactionDateFilter] = useState('all');
+  const [transactionColumns, setTransactionColumns] = useState(DEFAULT_TRANSACTION_COLUMNS);
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState([]);
+  const [viewingTransaction, setViewingTransaction] = useState(null);
+  const [paymentChangeRequests, setPaymentChangeRequests] = useState([]);
+  const [feePeriod, setFeePeriod] = useState('today');
   const [tenants, setTenants] = useState([]);
+  const [subscriptionDateEdits, setSubscriptionDateEdits] = useState({});
   const [plans, setPlans] = useState([]);
+  const [productFeatures, setProductFeatures] = useState([]);
   const [adminDashboard, setAdminDashboard] = useState(null);
   const [editingTenantId, setEditingTenantId] = useState(null);
   const [passwordTenantId, setPasswordTenantId] = useState(null);
@@ -254,18 +312,36 @@ function App() {
   const [planForm, setPlanForm] = useState(emptyPlan);
   const [editingPlanId, setEditingPlanId] = useState(null);
   const [planFormOpen, setPlanFormOpen] = useState(false);
+  const [roles, setRoles] = useState([]);
+  const [roleForm, setRoleForm] = useState(emptyClinicRole);
+  const [editingRoleId, setEditingRoleId] = useState(null);
+  const [roleFormOpen, setRoleFormOpen] = useState(false);
+  const [permissionUserId, setPermissionUserId] = useState('');
+  const [permissionOverridesForm, setPermissionOverridesForm] = useState(emptyPermissionOverrides);
   const [patientForm, setPatientForm] = useState(emptyPatient);
   const [editingPatientId, setEditingPatientId] = useState(null);
   const [patientFormOpen, setPatientFormOpen] = useState(false);
+  const [selectedPatientId, setSelectedPatientId] = useState('');
+  const [selectedPatientIds, setSelectedPatientIds] = useState([]);
+  const [selectedAppointmentIds, setSelectedAppointmentIds] = useState([]);
   const [doctorForm, setDoctorForm] = useState({ name: '', specialty: '' });
   const [editingDoctorId, setEditingDoctorId] = useState(null);
   const [bookingForm, setBookingForm] = useState(emptyBooking);
   const [bookingFormOpen, setBookingFormOpen] = useState(false);
-  const [appointmentRegisterOpen, setAppointmentRegisterOpen] = useState(true);
+  const [appointmentRegisterOpen, setAppointmentRegisterOpen] = useState(false);
+  const [waitlistOpen, setWaitlistOpen] = useState(false);
+  const [completionAppointment, setCompletionAppointment] = useState(null);
+  const [completionDialogOpen, setCompletionDialogOpen] = useState(false);
+  const [billingRequestFor, setBillingRequestFor] = useState(null);
+  const [billingRequestMessage, setBillingRequestMessage] = useState('');
+  const [completionForm, setCompletionForm] = useState({ consultation_fee: '', discount_amount: '0', additional_charges: '0', amount_paid: '', payment_method: 'cash', payment_reference: '', completion_notes: '', payment_proof_data_url: '', payment_proof_name: '' });
   const [tenantForm, setTenantForm] = useState(emptyTenant);
   const [appointmentQuery, setAppointmentQuery] = useState('');
   const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
   const [appointmentDateFilter, setAppointmentDateFilter] = useState('all');
+  const [reportMonth, setReportMonth] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()).slice(0, 7));
+  const [waitlistForm, setWaitlistForm] = useState(emptyWaitlistEntry);
+  const [waitlistFormOpen, setWaitlistFormOpen] = useState(false);
   const [overviewActivityRange, setOverviewActivityRange] = useState('7d');
   const [patientQuery, setPatientQuery] = useState('');
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
@@ -283,6 +359,9 @@ function App() {
   const confirmationResolverRef = useRef(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  useEffect(() => setSelectedPatientIds([]), [session?.tenant_id]);
+  useEffect(() => setSelectedAppointmentIds([]), [session?.tenant_id]);
+  useEffect(() => setSelectedTransactionIds([]), [session?.tenant_id]);
   const [seenBookingIds, setSeenBookingIds] = useState([]);
   const [seenClinicInterestIds, setSeenClinicInterestIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('carestack-seen-clinic-interests') || '[]'); } catch { return []; }
@@ -305,17 +384,16 @@ function App() {
   const [staff, setStaff] = useState([]);
   const [staffQuery, setStaffQuery] = useState('');
   const [staffRoleFilter, setStaffRoleFilter] = useState('all');
-  const [staffPermissionFilter, setStaffPermissionFilter] = useState('all');
   const [staffColumns, setStaffColumns] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('carestack-staff-table-columns') || 'null');
       const valid = Array.isArray(saved) ? saved.filter((key) => STAFF_TABLE_COLUMNS.some((column) => column.key === key)) : [];
-      return valid.length ? valid : ['name', 'email', 'role', 'permissions'];
+      return valid.length ? valid : ['name', 'email', 'role'];
     } catch {
-      return ['name', 'email', 'role', 'permissions'];
+      return ['name', 'email', 'role'];
     }
   });
-  const [staffForm, setStaffForm] = useState({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) });
+  const [staffForm, setStaffForm] = useState({ id: null, name: '', email: '', password: '', role: 'receptionist' });
   const [staffFormOpen, setStaffFormOpen] = useState(false);
 
   const askForConfirmation = (dialog) => new Promise((resolve) => {
@@ -416,7 +494,6 @@ function App() {
         if (parsed.role === 'super_admin') {
           setSession(parsed);
           setPage('dashboard');
-          setActiveView('overview');
           await loadAdminData();
           return;
         }
@@ -434,7 +511,7 @@ function App() {
         }
         setSession(parsed);
         setPage('dashboard');
-        setActiveView(availableClinicViews(parsed)[0] || 'overview');
+        setActiveView(availableClinicViews(parsed, tenantData?.plan_features)[0] || 'overview');
         await loadDashboard(parsed.tenant_id, true, true);
       } catch (loadError) {
         if (cancelled) return;
@@ -508,7 +585,7 @@ function App() {
       setSession(nextSession);
       setLoginOpen(false);
       setPage('dashboard');
-      setActiveView(nextSession.role === 'super_admin' ? 'overview' : availableClinicViews(nextSession)[0] || 'overview');
+      setActiveView(nextSession.role === 'super_admin' ? 'overview' : availableClinicViews(nextSession, tenantData?.plan_features)[0] || 'overview');
       if (nextSession.role === 'super_admin') {
         await loadAdminData();
       } else {
@@ -570,7 +647,7 @@ function App() {
       setLoginOpen(false);
       setLoginMode('login');
       setPage('dashboard');
-      setActiveView(availableClinicViews(nextSession)[0] || 'overview');
+      setActiveView(availableClinicViews(nextSession, tenantData?.plan_features)[0] || 'overview');
       await loadDashboard(nextSession.tenant_id);
     } catch (changeError) { setError(changeError.message); }
     finally { setBusy(false); }
@@ -580,7 +657,12 @@ function App() {
     if (!tenantId) return;
     try {
       const dashboard = await request(`/api/tenant/${tenantId}/dashboard?activity_range=${encodeURIComponent(activityRange)}`);
+      if (session?.tenant_id === tenantId && session.role !== 'super_admin' && !availableClinicViews(session, dashboard.plan_features).includes(activeView)) {
+        setActiveView(availableClinicViews(session, dashboard.plan_features)[0] || 'overview');
+      }
       const dashboardBookings = dashboard.bookings || [];
+      setTransactions(dashboard.transactions || []);
+      setPaymentChangeRequests(dashboard.payment_change_requests || []);
       const seenBookingsStorageKey = `carestack-seen-bookings-${tenantId}`;
       let persistedSeenBookingIds;
       try {
@@ -621,9 +703,73 @@ function App() {
   const loadStaff = async () => {
     if (!session?.tenant_id || session.role !== 'tenant_admin') return;
     try {
-      const response = await request(`/api/tenant/${session.tenant_id}/staff`);
+      const [response, roleResponse] = await Promise.all([
+        request(`/api/tenant/${session.tenant_id}/staff`),
+        request(`/api/tenant/${session.tenant_id}/roles`),
+      ]);
       setStaff(response.staff || []);
+      setRoles(roleResponse.roles || []);
+      const availableStaff = response.staff || [];
+      const selectedUser = availableStaff.find((member) => member.id === permissionUserId) || availableStaff[0];
+      if (selectedUser) {
+        setPermissionUserId(selectedUser.id);
+        setPermissionOverridesForm(selectedUser.permission_overrides || emptyPermissionOverrides);
+      } else {
+        setPermissionUserId('');
+        setPermissionOverridesForm(emptyPermissionOverrides);
+      }
     } catch (loadError) { setError(loadError.message); }
+  };
+
+  const submitRoleForm = async (event) => {
+    event.preventDefault();
+    if (!session?.tenant_id) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const response = await request(`/api/tenant/${session.tenant_id}/roles${editingRoleId ? `/${editingRoleId}` : ''}`, {
+        method: editingRoleId ? 'PUT' : 'POST', body: JSON.stringify(roleForm),
+      });
+      setNotice(`${response.role.name} role ${editingRoleId ? 'updated' : 'created'}.`);
+      setRoleForm(emptyClinicRole); setEditingRoleId(null); setRoleFormOpen(false);
+      await loadStaff();
+    } catch (saveError) { setError(saveError.message); }
+    finally { setBusy(false); }
+  };
+
+  const editClinicRole = (role) => {
+    setRoleForm({ id: role.id, name: role.name, permissions: [...(role.permissions || [])] });
+    setEditingRoleId(role.id); setRoleFormOpen(true); setError(''); setNotice('');
+  };
+
+  const removeClinicRole = async (role) => {
+    if (role.built_in || role.id === 'receptionist') return;
+    if (!window.confirm(`Delete ${role.name}? Staff accounts must be moved to another role first.`)) return;
+    try {
+      await request(`/api/tenant/${session.tenant_id}/roles/${role.id}`, { method: 'DELETE' });
+      setNotice(`${role.name} role deleted.`);
+      await loadStaff();
+    } catch (deleteError) { setError(deleteError.message); }
+  };
+
+  const selectPermissionUser = (userId) => {
+    const member = staff.find((item) => item.id === userId);
+    setPermissionUserId(userId);
+    setPermissionOverridesForm(member?.permission_overrides || emptyPermissionOverrides);
+  };
+
+  const savePermissionOverrides = async (event) => {
+    event.preventDefault();
+    if (!session?.tenant_id || !permissionUserId) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const response = await request(`/api/tenant/${session.tenant_id}/staff/${permissionUserId}`, {
+        method: 'PATCH', body: JSON.stringify({ permission_overrides: permissionOverridesForm }),
+      });
+      setStaff((current) => current.map((member) => member.id === permissionUserId ? response.staff : member));
+      setPermissionOverridesForm(response.staff.permission_overrides || emptyPermissionOverrides);
+      setNotice(`User-level access saved for ${response.staff.name}.`);
+    } catch (saveError) { setError(saveError.message); }
+    finally { setBusy(false); }
   };
 
   const submitStaffForm = async (event) => {
@@ -635,7 +781,7 @@ function App() {
         method: id ? 'PATCH' : 'POST', body: JSON.stringify(staffPayload),
       });
       setNotice(id ? 'Staff access updated.' : 'Staff account created.');
-      setStaffForm({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) });
+      setStaffForm({ id: null, name: '', email: '', password: '', role: 'receptionist' });
       setStaffFormOpen(false);
       await loadStaff();
     } catch (saveError) { setError(saveError.message); }
@@ -826,7 +972,12 @@ function App() {
       request('/api/super-admin/clinic-interests'),
     ]);
     setTenants(tenantDataResponse.tenants || []);
+    setSubscriptionDateEdits(Object.fromEntries((tenantDataResponse.tenants || []).map((tenant) => [tenant.id, {
+      start: tenant.subscription_start_date || '', end: tenant.subscription_end_date || '',
+    }])));
     setPlans(planDataResponse.plans || []);
+    const apiFeatures = planDataResponse.features || [];
+    setProductFeatures([...apiFeatures, ...BILLING_PRODUCT_FEATURES.filter((feature) => !apiFeatures.some((item) => item.id === feature.id))]);
     setAdminDashboard(dashboardResponse);
     setClinicInterests(clinicInterestsResponse.clinic_interests || []);
     setLastRefreshed(new Date());
@@ -998,6 +1149,22 @@ function App() {
     }
   };
 
+  const saveSubscriptionDates = async (tenant) => {
+    const dates = subscriptionDateEdits[tenant.id] || {};
+    if (!dates.start || !dates.end || dates.end < dates.start) {
+      setError('Subscription end date must be on or after its start date.');
+      return;
+    }
+    await updateSubscription(tenant.id, { subscription_start_date: dates.start, subscription_end_date: dates.end });
+  };
+
+  const renewSubscription = async (tenant) => {
+    const start = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    await updateSubscription(tenant.id, {
+      subscription_status: 'active', subscription_start_date: start, subscription_end_date: subscriptionEndDate(start, tenant.billing_cycle),
+    });
+  };
+
   const removeTenant = async (tenant) => {
     const confirmed = await askForConfirmation({
       title: 'Delete clinic workspace?',
@@ -1032,6 +1199,7 @@ function App() {
         annual_price: Number(planForm.annual_price),
         clinic_limit: planForm.clinic_limit === '' ? null : Number(planForm.clinic_limit),
         user_limit: planForm.user_limit === '' ? null : Number(planForm.user_limit),
+        features: [...new Set(planForm.features || [])],
       };
       const data = await request(editingPlanId ? `/api/plans/${editingPlanId}` : '/api/plans', {
         method: editingPlanId ? 'PUT' : 'POST',
@@ -1059,6 +1227,7 @@ function App() {
       annual_price: String(plan.annual_price),
       clinic_limit: plan.clinic_limit == null ? '' : String(plan.clinic_limit),
       user_limit: plan.user_limit == null ? '' : String(plan.user_limit),
+      features: [...(plan.features || [])],
     });
     setNotice('');
     setError('');
@@ -1176,6 +1345,13 @@ function App() {
     window.setTimeout(() => document.getElementById('patient-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
 
+  const openAppointmentForPatient = (patient) => {
+    setBookingForm({ ...emptyBooking, patient_name: patient.name || '', phone_number: patient.phone || '' });
+    setBookingFormOpen(true);
+    setActiveView('appointments');
+    window.setTimeout(() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+  };
+
   const deletePatient = async (patientId) => {
     if (!session?.tenant_id) return;
     const confirmed = await askForConfirmation({
@@ -1193,6 +1369,26 @@ function App() {
     } catch (deleteError) {
       setError(deleteError.message);
     }
+  };
+
+  const deleteSelectedPatients = async () => {
+    if (!session?.tenant_id || !selectedPatientIds.length || (session.role !== 'tenant_admin' && !session.permissions?.includes('patients:manage'))) return;
+    const confirmed = await askForConfirmation({
+      title: `Delete ${selectedPatientIds.length} patient records?`,
+      message: 'The selected patient records will be removed from this clinic workspace.',
+      confirmLabel: 'Delete selected patients',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const patientIds = [...selectedPatientIds];
+      await Promise.all(patientIds.map((patientId) => request(`/api/tenant/${session.tenant_id}/patients/${encodeURIComponent(patientId)}`, { method: 'DELETE' })));
+      setSelectedPatientIds([]);
+      setNotice(`${patientIds.length} patient records deleted.`);
+      await loadDashboard(session.tenant_id);
+    } catch (deleteError) { setError(deleteError.message); }
+    finally { setBusy(false); }
   };
 
   const handleBookingSubmit = async (event) => {
@@ -1218,6 +1414,27 @@ function App() {
 
   const updateAppointmentStatus = async (appointmentId, status) => {
     if (!session?.tenant_id) return;
+    if (status === 'completed') {
+      const appointment = bookings.find((booking) => String(booking.id) === String(appointmentId));
+      if (!appointment) return;
+      setBillingRequestFor(null);
+      const billing = appointment.billing || {};
+      setCompletionAppointment(appointment);
+      setCompletionForm({
+        consultation_fee: billing.consultation_fee ?? '',
+        discount_amount: billing.discount_amount ?? '0',
+        additional_charges: billing.additional_charges ?? '0',
+        amount_paid: billing.amount_paid ?? '',
+        payment_method: billing.payment_method || 'cash',
+        payment_reference: billing.payment_reference || '',
+        completion_notes: billing.completion_notes || '',
+        payment_proof_data_url: billing.payment_proof_data_url || '',
+        payment_proof_name: billing.payment_proof_name || '',
+      });
+      setError('');
+      setCompletionDialogOpen(true);
+      return;
+    }
     if (status === 'cancelled') {
       const appointment = bookings.find((booking) => String(booking.id) === String(appointmentId));
       const confirmed = await askForConfirmation({
@@ -1246,15 +1463,198 @@ function App() {
     }
   };
 
-  const exportTenantCsv = (kind) => {
+  const editTransactionBilling = (transaction) => {
+    if (session?.role !== 'tenant_admin' && !session?.permissions?.includes('payments:manage')) return;
+    const billing = {
+      consultation_fee: transaction.consultation_fee,
+      discount_amount: transaction.discount_amount || 0,
+      additional_charges: transaction.additional_charges || 0,
+      amount_paid: transaction.amount_paid || 0,
+      payment_method: transaction.payment_method || 'unpaid',
+      payment_reference: transaction.payment_reference || '',
+      completion_notes: transaction.completion_notes || '',
+      payment_proof_data_url: transaction.payment_proof_data_url || '',
+      payment_proof_name: transaction.payment_proof_name || '',
+    };
+    setCompletionAppointment({ ...transaction, id: transaction.appointment_id, status: 'completed', billing });
+    setBillingRequestFor(null);
+    setCompletionForm({
+      consultation_fee: billing.consultation_fee,
+      discount_amount: billing.discount_amount,
+      additional_charges: billing.additional_charges,
+      amount_paid: billing.amount_paid,
+      payment_method: billing.payment_method,
+      payment_reference: billing.payment_reference,
+      completion_notes: billing.completion_notes,
+      payment_proof_data_url: billing.payment_proof_data_url,
+      payment_proof_name: billing.payment_proof_name,
+    });
+    setError('');
+    setCompletionDialogOpen(true);
+  };
+
+  const deleteTransaction = async (transaction) => {
+    if (session?.role !== 'tenant_admin' && !session?.permissions?.includes('payments:manage')) return;
+    const confirmed = await askForConfirmation({
+      title: 'Delete this payment record?',
+      message: `${transaction.transaction_id || 'Unpaid visit'} · ${transaction.patient_name}. The appointment will remain completed, but its billing record will be removed.`,
+      confirmLabel: 'Delete payment',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await request(`/api/tenant/${session.tenant_id}/payments/${encodeURIComponent(transaction.appointment_id)}`, { method: 'DELETE' });
+      setNotice(`Payment record for appointment ${transaction.appointment_id} was deleted.`);
+      await loadDashboard(session.tenant_id);
+    } catch (deleteError) { setError(deleteError.message); }
+    finally { setBusy(false); }
+  };
+
+  const submitAppointmentCompletion = async (event) => {
+    event.preventDefault();
+    if (!session?.tenant_id || !completionAppointment) return;
+    const billing = {
+      consultation_fee: Number(completionForm.consultation_fee),
+      discount_amount: Number(completionForm.discount_amount || 0),
+      additional_charges: Number(completionForm.additional_charges || 0),
+      amount_paid: Number(completionForm.amount_paid || 0),
+      payment_method: completionForm.payment_method,
+      payment_reference: completionForm.payment_reference.trim(),
+      completion_notes: completionForm.completion_notes.trim(),
+      payment_proof_data_url: completionForm.payment_proof_data_url,
+      payment_proof_name: completionForm.payment_proof_name,
+    };
+    const total = Math.max(0, billing.consultation_fee - billing.discount_amount + billing.additional_charges);
+    if (billing.discount_amount > billing.consultation_fee || billing.amount_paid > total) {
+      setError(billing.discount_amount > billing.consultation_fee ? 'Discount cannot exceed the consultation fee.' : 'Amount received cannot exceed the final bill.');
+      return;
+    }
+    if (billingRequestFor) {
+      setBusy(true); setError(''); setNotice('');
+      try {
+        await request(`/api/tenant/${session.tenant_id}/payment-change-requests`, { method: 'POST', body: JSON.stringify({
+          appointment_id: billingRequestFor.appointment_id,
+          message: billingRequestMessage.trim() || 'Please review this requested billing correction.',
+          billing,
+        }) });
+        setCompletionDialogOpen(false); setCompletionAppointment(null); setBillingRequestFor(null); setBillingRequestMessage('');
+        setNotice(`Billing change request for ${billingRequestFor.appointment_id} sent to the clinic admin for approval.`);
+        await loadDashboard(session.tenant_id);
+      } catch (requestError) { setError(requestError.message || 'Could not send the billing change request.'); }
+      finally { setBusy(false); }
+      return;
+    }
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await request(`/api/tenant/${session.tenant_id}/appointments/${completionAppointment.id}`, {
+        method: 'PATCH', body: JSON.stringify({ status: 'completed', billing }),
+      });
+      setCompletionDialogOpen(false);
+      setCompletionAppointment(null);
+      setNotice(`Appointment ${completionAppointment.id} completed and billing saved.`);
+      await loadDashboard(session.tenant_id);
+    } catch (completionError) { setError(completionError.message); }
+    finally { setBusy(false); }
+  };
+
+  const openBillingChangeRequest = (transaction) => {
+    const billing = {
+      consultation_fee: transaction.consultation_fee,
+      discount_amount: transaction.discount_amount || 0,
+      additional_charges: transaction.additional_charges || 0,
+      amount_paid: transaction.amount_paid || 0,
+      payment_method: transaction.payment_method || 'unpaid',
+      payment_reference: transaction.payment_reference || '',
+      completion_notes: transaction.completion_notes || '',
+      payment_proof_data_url: transaction.payment_proof_data_url || '',
+      payment_proof_name: transaction.payment_proof_name || '',
+    };
+    setBillingRequestFor(transaction);
+    setBillingRequestMessage('');
+    setCompletionAppointment({ ...transaction, id: transaction.appointment_id, status: 'completed' });
+    setCompletionForm({ ...billing });
+    setError(''); setCompletionDialogOpen(true);
+  };
+
+  const reconcilePayment = async (transaction) => {
+    if (!session?.tenant_id || transaction.reconciled_at) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await request(`/api/tenant/${session.tenant_id}/payments/${encodeURIComponent(transaction.appointment_id)}/reconcile`, { method: 'PATCH' });
+      setNotice(`Ledger entry for ${transaction.appointment_id} matched.`);
+      await loadDashboard(session.tenant_id);
+    } catch (reconcileError) { setError(reconcileError.message || 'Could not match this ledger entry.'); }
+    finally { setBusy(false); }
+  };
+
+  const reviewPaymentChangeRequest = async (changeRequest, status) => {
+    if (!session?.tenant_id || session?.role !== 'tenant_admin') return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await request(`/api/tenant/${session.tenant_id}/payment-change-requests/${encodeURIComponent(changeRequest.id)}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      setNotice(result.message || 'Billing request reviewed.');
+      await loadDashboard(session.tenant_id);
+    } catch (reviewError) { setError(reviewError.message || 'Could not review this billing request.'); }
+    finally { setBusy(false); }
+  };
+
+  const addWaitlistEntry = async (event) => {
+    event.preventDefault();
+    if (!session?.tenant_id) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await request(`/api/tenant/${session.tenant_id}/waitlist`, { method: 'POST', body: JSON.stringify(waitlistForm) });
+      setTenantData((current) => ({ ...current, waitlist: [...(current?.waitlist || []), result.entry] }));
+      setWaitlistForm(emptyWaitlistEntry);
+      setWaitlistFormOpen(false);
+      setNotice(`${result.entry.name} added to the cancellation waitlist.`);
+    } catch (waitlistError) { setError(waitlistError.message || 'Could not add this patient to the waitlist.'); }
+    finally { setBusy(false); }
+  };
+
+  const updateWaitlistEntryStatus = async (entryId, status) => {
+    if (!session?.tenant_id) return;
+    setError(''); setNotice('');
+    try {
+      const result = await request(`/api/tenant/${session.tenant_id}/waitlist/${entryId}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      setTenantData((current) => ({ ...current, waitlist: (current?.waitlist || []).map((entry) => entry.id === entryId ? result.entry : entry) }));
+      setNotice('Waitlist status updated.');
+    } catch (waitlistError) { setError(waitlistError.message || 'Could not update the waitlist status.'); }
+  };
+
+  const exportTenantCsv = (kind, appointmentRows = bookings, patientRows = patients) => {
     const rows = kind === 'patients'
-      ? [['Patient ID', 'Name', 'Phone', 'Email', 'Age', 'Status'], ...patients.map((patient) => [patient.id, patient.name, patient.phone, patient.email || '', patient.age || '', patient.status])]
-      : [['Appointment ID', 'Patient', 'Phone', 'Doctor', 'Date', 'Time', 'Reason', 'Status'], ...bookings.map((booking) => [booking.id, booking.patient_name, booking.phone_number, booking.doctor_name, booking.appointment_date, booking.appointment_time, booking.reason || '', booking.status])];
+      ? [['Patient ID', 'Name', 'Phone', 'Email', 'Age', 'Status'], ...patientRows.map((patient) => [patient.id, patient.name, patient.phone, patient.email || '', patient.age || '', patient.status])]
+      : [['Appointment ID', 'Patient', 'Phone', 'Doctor', 'Date', 'Time', 'Reason', 'Status'], ...appointmentRows.map((booking) => [booking.id, booking.patient_name, booking.phone_number, booking.doctor_name, booking.appointment_date, booking.appointment_time, booking.reason || '', booking.status])];
     const csv = rows.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${tenantBrand.domain}-${kind}-${new Date().toISOString().slice(0, 10)}.csv`;
+    const exportPeriod = kind === 'bookings' && appointmentRows !== bookings ? reportMonth : new Date().toISOString().slice(0, 10);
+    link.download = `${tenantBrand.domain}-${kind}-${exportPeriod}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportTransactionsCsv = (rows = transactions) => {
+    const columns = [
+      ['Transaction ID', (item) => item.transaction_id || 'Unpaid'], ['Appointment ID', (item) => item.appointment_id],
+      ['Patient', (item) => item.patient_name], ['Phone', (item) => item.phone_number], ['Doctor', (item) => item.doctor_name],
+      ['Visit date', (item) => item.appointment_date], ['Visit time', (item) => item.appointment_time], ['Visit reason', (item) => item.reason],
+      ['Consultation fee', (item) => item.consultation_fee], ['Discount', (item) => item.discount_amount], ['Extra charges', (item) => item.additional_charges],
+      ['Total bill', (item) => item.total_amount], ['Received', (item) => item.amount_paid], ['Balance due', (item) => item.balance_due],
+      ['Payment method', (item) => item.payment_method], ['Payment status', (item) => item.payment_status], ['Payment reference', (item) => item.payment_reference],
+      ['Payment document', (item) => item.payment_proof_data_url ? item.payment_proof_name || 'Attached' : ''],
+      ['Recorded by', (item) => item.recorded_by || 'Not captured for this entry'], ['Recorded / updated at', (item) => item.updated_at],
+      ['Checkout notes', (item) => item.completion_notes], ['Reconciled by', (item) => item.reconciled_by], ['Reconciled at', (item) => item.reconciled_at],
+    ];
+    const csvRows = [columns.map(([label]) => label), ...rows.map((item) => columns.map(([, value]) => value(item) ?? ''))];
+    const csv = csvRows.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${tenantBrand.domain}-transactions-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1317,6 +1717,39 @@ function App() {
       setProfileNotice('');
     };
     reader.onerror = () => { setProfileError('The selected image could not be opened.'); setProfileNotice(''); };
+    reader.readAsDataURL(file);
+  };
+
+  const handlePaymentProofChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setError('Choose a PNG, JPG, or WebP payment screenshot.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const qualities = [0.86, 0.78, 0.7, 0.62];
+        const dataUrl = qualities.map((quality) => canvas.toDataURL('image/jpeg', quality)).find((value) => value.length <= 650000);
+        if (!dataUrl) {
+          setError('This screenshot is too large. Choose a smaller image (under 650 KB after compression).');
+          return;
+        }
+        setCompletionForm((current) => ({ ...current, payment_proof_data_url: dataUrl, payment_proof_name: file.name.slice(0, 150) }));
+        setError('');
+      };
+      image.onerror = () => setError('The selected screenshot could not be opened.');
+      image.src = String(reader.result || '');
+    };
+    reader.onerror = () => setError('The selected screenshot could not be opened.');
     reader.readAsDataURL(file);
   };
 
@@ -1461,6 +1894,25 @@ function App() {
   const maxStatusCount = Math.max(1, ...analytics.status_breakdown.map((item) => item.count));
   const maxDoctorCount = Math.max(1, ...analytics.doctor_workload.map((item) => item.count));
   const clinicToday = new Intl.DateTimeFormat('en-CA', { timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
+  const todayBookings = bookings.filter((booking) => booking.appointment_date === clinicToday && !['cancelled', 'no_show'].includes(booking.status))
+    .sort((left, right) => left.appointment_time.localeCompare(right.appointment_time));
+  const todayPlanEntries = session?.role === 'tenant_admin' ? todayBookings : (tenantData?.today_plan?.bookings || []);
+  const todayPlanSummary = session?.role === 'tenant_admin' ? {
+    scheduled: summary.today_appointments || 0,
+    completed: summary.today_completed || 0,
+    cancelled: summary.today_cancelled || 0,
+  } : (tenantData?.today_plan?.summary || {});
+  const clinicWaitlist = tenantData?.waitlist || [];
+  const reopenedSlots = bookings.filter((booking) => booking.status === 'cancelled' && booking.appointment_date >= clinicToday)
+    .map((booking) => ({
+      booking,
+      matches: clinicWaitlist.filter((entry) => entry.status === 'waiting'
+        && (!entry.preferred_date || entry.preferred_date === booking.appointment_date)
+        && (!entry.preferred_time || entry.preferred_time === booking.appointment_time)
+        && (!entry.doctor_name || entry.doctor_name.trim().toLocaleLowerCase() === booking.doctor_name.trim().toLocaleLowerCase())),
+    }))
+    .filter((slot) => slot.matches.length)
+    .sort((left, right) => `${left.booking.appointment_date} ${left.booking.appointment_time}`.localeCompare(`${right.booking.appointment_date} ${right.booking.appointment_time}`));
   const filteredBookings = bookings.filter((booking) => {
     const matchesStatus = appointmentStatusFilter === 'all' || booking.status === appointmentStatusFilter;
     const query = appointmentQuery.trim().toLowerCase();
@@ -1471,38 +1923,87 @@ function App() {
       || (appointmentDateFilter === 'upcoming' && booking.appointment_date >= clinicToday && !['cancelled', 'no_show'].includes(booking.status));
     return matchesStatus && matchesQuery && matchesDate;
   });
+  const monthlyBookings = bookings.filter((booking) => String(booking.appointment_date || '').startsWith(reportMonth))
+    .sort((left, right) => `${right.appointment_date} ${right.appointment_time}`.localeCompare(`${left.appointment_date} ${left.appointment_time}`));
+  const monthlyBookingStatuses = ['confirmed', 'completed', 'cancelled', 'no_show'].map((status) => ({
+    status,
+    count: monthlyBookings.filter((booking) => booking.status === status).length,
+  }));
+  const formatINR = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(amount) || 0);
+  const transactionTotals = transactions.reduce((totals, transaction) => ({
+    billed: totals.billed + Number(transaction.total_amount || 0),
+    received: totals.received + Number(transaction.amount_paid || 0),
+    due: totals.due + Number(transaction.balance_due || 0),
+  }), { billed: 0, received: 0, due: 0 });
+  const filteredTransactions = transactions.filter((transaction) => {
+    const query = transactionQuery.trim().toLowerCase();
+    const matchesQuery = !query || [transaction.transaction_id, transaction.appointment_id, transaction.patient_name, transaction.phone_number, transaction.doctor_name, transaction.reason, transaction.payment_reference, transaction.recorded_by]
+      .some((value) => String(value || '').toLowerCase().includes(query));
+    const matchesStatus = transactionStatusFilter === 'all' || transaction.payment_status === transactionStatusFilter;
+    const matchesMethod = transactionMethodFilter === 'all' || (transaction.payment_method || 'unpaid') === transactionMethodFilter;
+    const matchesDate = transactionDateFilter === 'all'
+      || (transactionDateFilter === 'today' && transaction.appointment_date === clinicToday)
+      || (transactionDateFilter === 'month' && String(transaction.appointment_date || '').startsWith(clinicToday.slice(0, 7)));
+    return matchesQuery && matchesStatus && matchesMethod && matchesDate;
+  });
+  const feeTransactions = transactions.filter((transaction) => feePeriod === 'today'
+    ? transaction.appointment_date === clinicToday
+    : String(transaction.appointment_date || '').startsWith(clinicToday.slice(0, 7)));
+  const feeTotals = feeTransactions.reduce((totals, transaction) => ({
+    billed: totals.billed + Number(transaction.total_amount || 0),
+    received: totals.received + Number(transaction.amount_paid || 0),
+    due: totals.due + Number(transaction.balance_due || 0),
+    matched: totals.matched + (transaction.reconciled_at ? Number(transaction.amount_paid || 0) : 0),
+  }), { billed: 0, received: 0, due: 0, matched: 0 });
+  const bookingsForPatient = (patient) => bookings.filter((booking) => {
+    const bookingPatientId = String(booking.patient_id || '');
+    if (bookingPatientId) return bookingPatientId === String(patient.id);
+    const patientPhone = String(patient.phone || '').replace(/\D/g, '');
+    const bookingPhone = String(booking.phone_number || '').replace(/\D/g, '');
+    if (patientPhone && bookingPhone) return patientPhone === bookingPhone;
+    return String(booking.patient_name || '').trim().toLocaleLowerCase() === String(patient.name || '').trim().toLocaleLowerCase();
+  });
+  const selectedPatient = patients.find((patient) => String(patient.id) === String(selectedPatientId));
+  const selectedPatientBookings = selectedPatient
+    ? bookingsForPatient(selectedPatient).sort((left, right) => `${right.appointment_date} ${right.appointment_time}`.localeCompare(`${left.appointment_date} ${left.appointment_time}`))
+    : [];
+  const selectedPatientUpcoming = selectedPatientBookings.filter((booking) => booking.appointment_date >= clinicToday && !['cancelled', 'no_show'].includes(booking.status)).sort((left, right) => `${left.appointment_date} ${left.appointment_time}`.localeCompare(`${right.appointment_date} ${right.appointment_time}`))[0];
+  const formatPatientDate = (value) => {
+    if (!value) return '—';
+    const parsedDate = new Date(`${value}T00:00:00`);
+    return Number.isNaN(parsedDate.getTime()) ? value : parsedDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
   const filteredPatients = patients.filter((patient) => {
     const query = patientQuery.trim().toLowerCase();
-    const searchableValues = activeView === 'overview'
-      ? PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => column.value(patient))
-      : [patient.id, patient.name, patient.phone, patient.email, patient.age, patient.status];
+    const searchableValues = [patient.id, patient.name, patient.phone, patient.email, patient.age, patient.status];
     const matchesQuery = !query || searchableValues
       .some((value) => String(value || '').toLowerCase().includes(query));
-    const patientBookings = bookings.filter((booking) => String(booking.patient_id || '') === String(patient.id));
+    const patientBookings = bookingsForPatient(patient);
     const hasTodayBooking = patientBookings.some((booking) => booking.appointment_date === clinicToday && !['cancelled', 'no_show'].includes(booking.status));
     const hasUpcomingBooking = patientBookings.some((booking) => booking.appointment_date >= clinicToday && !['cancelled', 'no_show'].includes(booking.status));
     const matchesDate = activeView !== 'overview' || patientDateFilter === 'all'
       || (patientDateFilter === 'today' && hasTodayBooking)
       || (patientDateFilter === 'upcoming' && hasUpcomingBooking);
-    return matchesQuery && matchesDate && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
+    return matchesQuery && matchesDate && (patientStatusFilter === 'all' || String(patient.status || '').toLowerCase() === patientStatusFilter);
   });
   const filteredStaff = staff.filter((member) => {
     const query = staffQuery.trim().toLowerCase();
     const searchable = STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => column.value(member));
     const matchesQuery = !query || searchable.some((value) => String(value || '').toLowerCase().includes(query));
     const matchesRole = staffRoleFilter === 'all' || member.role === staffRoleFilter;
-    const matchesPermission = staffPermissionFilter === 'all' || (member.permissions || []).includes(staffPermissionFilter);
-    return matchesQuery && matchesRole && matchesPermission;
+    return matchesQuery && matchesRole;
   });
   const displayedPatients = [...filteredPatients].sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')));
   const clinicInterestPagination = useListPagination(clinicInterests, `leads:${activeView}`);
   const tenantPagination = useListPagination(tenants, `tenants:${activeView}`);
   const subscriptionTenantPagination = useListPagination(tenants, `subscriptions:${activeView}`);
   const planPagination = useListPagination(plans, `plans:${activeView}`);
-  const staffPagination = useListPagination(filteredStaff, `staff:${activeView}:${session?.tenant_id || ''}:${staffQuery}:${staffRoleFilter}:${staffPermissionFilter}:${staffColumns.join(',')}`);
+  const staffPagination = useListPagination(filteredStaff, `staff:${activeView}:${session?.tenant_id || ''}:${staffQuery}:${staffRoleFilter}:${staffColumns.join(',')}`);
   const doctorPagination = useListPagination(tenantData?.doctors || [], `doctors:${activeView}:${session?.tenant_id || ''}`);
   const appointmentPagination = useListPagination(filteredBookings, `appointments:${activeView}:${appointmentQuery}:${appointmentStatusFilter}:${appointmentDateFilter}`);
+  const monthlyBookingPagination = useListPagination(monthlyBookings, `monthly-bookings:${reportMonth}`);
   const patientPagination = useListPagination(activeView === 'overview' ? displayedPatients : filteredPatients, `patients:${activeView}:${patientQuery}:${patientStatusFilter}:${patientDateFilter}:${patientOverviewColumns.join(',')}`);
+  const transactionPagination = useListPagination(filteredTransactions, `transactions:${activeView}:${transactionQuery}:${transactionStatusFilter}:${transactionMethodFilter}:${transactionDateFilter}`);
   const doctorWorkloadPagination = useListPagination(analytics.doctor_workload, `doctor-workload:${activeView}`);
   const planBreakdownPagination = useListPagination(planBreakdown, `plan-breakdown:${activeView}`);
   const clinicDoctors = [...new Set([...(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.name), bookingForm.doctor_name].filter(Boolean))];
@@ -1516,6 +2017,40 @@ function App() {
     ? `${current} ${activityRangeLabel} · no prior baseline`
     : `${current - previous > 0 ? '+' : ''}${current - previous} vs ${previousActivityRangeLabel}`;
 
+  const renderRecentPatients = () => {
+    const recentRows = patientPagination.items;
+    const canManagePatients = session?.role === 'tenant_admin' || session?.permissions?.includes('patients:manage');
+    const canViewPatients = session?.role === 'tenant_admin' || session?.permissions?.some((permission) => ['patients:view', 'patients:manage', 'reports:view'].includes(permission));
+    if (!canViewPatients) return null;
+    const selectedRows = patients.filter((patient) => selectedPatientIds.includes(String(patient.id)));
+    const allPageSelected = recentRows.length > 0 && recentRows.every((patient) => selectedPatientIds.includes(String(patient.id)));
+    const togglePatientSelection = (patientId) => setSelectedPatientIds((current) => current.includes(String(patientId)) ? current.filter((id) => id !== String(patientId)) : [...current, String(patientId)]);
+    const togglePageSelection = () => setSelectedPatientIds((current) => allPageSelected
+      ? current.filter((id) => !recentRows.some((patient) => String(patient.id) === id))
+      : [...new Set([...current, ...recentRows.map((patient) => String(patient.id))])]);
+
+    return <section className="tenant-insight-panel recent-patients-panel" aria-labelledby="recent-patients-heading">
+      <div className="admin-panel-heading"><div><h3 id="recent-patients-heading">Recent patients</h3><p>{filteredPatients.length} patients match the current filters.</p></div><div className="d-flex flex-wrap gap-2">
+        {canManagePatients && <button type="button" className="btn btn-sm btn-primary" onClick={() => { setPatientForm(emptyPatient); setEditingPatientId(null); setPatientFormOpen(true); setActiveView('patients'); }}>＋ Add patient</button>}
+        <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => setActiveView('patients')}>Patient directory</button>
+        <button type="button" className="btn btn-sm btn-outline-secondary" disabled={!selectedRows.length} onClick={() => exportTenantCsv('patients', bookings, selectedRows)}>Export selected</button>
+        {canManagePatients && <button type="button" className="btn btn-sm btn-outline-danger" disabled={!selectedRows.length || busy} onClick={deleteSelectedPatients}>Delete selected</button>}
+      </div></div>
+      <div className="workspace-table-tools recent-patients-tools">
+        <div className="workspace-search"><label className="visually-hidden" htmlFor="recent-patient-search">Search recent patients</label><span aria-hidden="true">⌕</span><input id="recent-patient-search" className="form-control" placeholder="Search patients" value={patientQuery} onChange={(event) => setPatientQuery(event.target.value)} /></div>
+        <select className="form-select workspace-status-filter" aria-label="Filter recent patients by status" value={patientStatusFilter} onChange={(event) => setPatientStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+        <div className="workspace-filter-pills" role="group" aria-label="Recent patient visit filter">{[['today', 'Today'], ['upcoming', 'Upcoming'], ['all', 'All patients']].map(([value, label]) => <button type="button" key={value} className={patientDateFilter === value ? 'active' : ''} aria-pressed={patientDateFilter === value} onClick={() => setPatientDateFilter(value)}>{label}</button>)}</div>
+        <details className="patient-column-picker"><summary className="btn btn-sm btn-outline-secondary patient-icon-trigger" aria-label="Choose columns" title="Choose columns"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="5" height="14" rx="1"/><rect x="10" y="5" width="4" height="14" rx="1"/><rect x="15" y="5" width="5" height="14" rx="1"/></svg></summary><div className="patient-column-picker-menu" role="group" aria-label="Choose recent patient columns">{PATIENT_TABLE_COLUMNS.map((column) => <label key={column.key}><input type="checkbox" checked={patientOverviewColumns.includes(column.key)} disabled={patientOverviewColumns.length === 1 && patientOverviewColumns.includes(column.key)} onChange={() => setPatientOverviewColumns((current) => current.includes(column.key) ? current.filter((key) => key !== column.key) : [...current, column.key])} /> {column.label}</label>)}</div></details>
+        <button type="button" className={`btn btn-sm btn-outline-secondary patient-icon-trigger ${selectedRows.length ? 'has-active-selection' : ''}`} aria-label="Clear selection" title="Clear selection" disabled={!selectedRows.length} onClick={() => setSelectedPatientIds([])}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 17 17M17 7 7 17"/><circle cx="12" cy="12" r="9"/></svg></button>
+      </div>
+      <div className="recent-patient-bulk-actions" aria-live="polite"><span>{selectedPatientIds.length} selected</span></div>
+      <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th><input className="form-check-input" type="checkbox" aria-label="Select all patients on this page" checked={allPageSelected} onChange={togglePageSelection} /></th>{PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => <th key={column.key}>{column.label}</th>)}<th>Actions</th></tr></thead><tbody>
+        {recentRows.length ? recentRows.map((patient) => <tr key={patient.id} className={selectedPatientIds.includes(String(patient.id)) ? 'recent-patient-selected' : ''}><td><input className="form-check-input" type="checkbox" aria-label={`Select ${patient.name}`} checked={selectedPatientIds.includes(String(patient.id))} onChange={() => togglePatientSelection(patient.id)} /></td>{PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => <td key={column.key}>{column.key === 'status' ? <span className={`status-pill ${patient.status === 'active' ? 'confirmed' : 'cancelled'}`}>{patient.status || 'active'}</span> : column.value(patient) || '—'}</td>)}<td className="text-nowrap"><button type="button" className="btn btn-sm btn-outline-secondary me-2" onClick={() => { setSelectedPatientId(String(patient.id)); setActiveView('patients'); }}>View</button>{canManagePatients && <><button type="button" className="btn btn-sm btn-outline-primary me-2" onClick={() => { editPatient(patient); setActiveView('patients'); }}>Edit</button><button type="button" className="btn btn-sm btn-outline-danger" onClick={() => deletePatient(patient.id)}>Delete</button></>}</td></tr>) : <tr><td colSpan={PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).length + 2} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td></tr>}
+      </tbody></table></div>
+      <ListPagination pagination={patientPagination} label="patients" />
+    </section>;
+  };
+
   const renderTenantOverview = () => (
     <>
       <div className="row g-3 mb-4">
@@ -1526,6 +2061,12 @@ function App() {
           ['Next 7 days', summary.upcoming_appointments ?? 0, 'Visits scheduled in the coming week'],
         ].map(([label, value, hint], index) => <div className="col-6 col-xl-3" key={label}><div className={`tenant-kpi tenant-kpi-${index}`}><small>{label}</small><strong>{value}</strong><span>{hint}</span></div></div>)}
       </div>
+      {session?.role !== 'tenant_admin' && (session?.permissions || []).includes('overview:today_plan') && <div className="row g-4 mb-4">
+        <div className="col-12"><section className="tenant-insight-panel">
+          <div className="admin-panel-heading"><div><h3>Today’s clinic plan</h3><p>{todayPlanSummary.scheduled || 0} scheduled visits · {todayPlanSummary.completed || 0} completed · {todayPlanSummary.cancelled || 0} cancelled</p></div>{availableClinicViews(session, tenantData?.plan_features).includes('appointments') && <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => { setAppointmentDateFilter('today'); setActiveView('appointments'); }}>Open today’s schedule</button>}</div>
+          {todayPlanEntries.length ? <div className="agenda-list">{todayPlanEntries.slice(0, 8).map((booking, index) => <div className="agenda-row" key={booking.id || `${booking.patient_name}-${booking.appointment_time}-${index}`}><div className="agenda-date"><strong>{booking.appointment_time}</strong><small>{booking.doctor_name}</small></div><div className="agenda-details"><strong>{booking.patient_name}</strong></div><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></div>)}{todayPlanEntries.length > 8 && <p className="small text-muted mb-0 mt-2">Showing 8 of {todayPlanEntries.length} visits. Open today’s schedule to see the full list.</p>}</div> : <div className="empty-insight">No visits are scheduled for today.</div>}
+        </section></div>
+      </div>}
       <div className="row g-4 mb-4">
         <div className="col-12"><section className="tenant-insight-panel">
           <div className="admin-panel-heading tenant-growth-heading"><div><h3>Clinic growth activity</h3><p>Patient records and appointment bookings created each day · {activityRangeLabel}</p></div><div className="tenant-growth-tools"><label className="overview-range-filter" title="Filter clinic growth activity by date range">
@@ -1543,6 +2084,7 @@ function App() {
           <div className="growth-comparison"><span>Patient registrations <strong>{analytics.summary.patient_activity?.current ?? 0}</strong> {activityRangeLabel} <span className="comparison-divider">vs</span> <strong>{analytics.summary.patient_activity?.previous ?? 0}</strong> {previousActivityRangeLabel}</span><span>Bookings created <strong>{analytics.summary.booking_activity?.current ?? 0}</strong> {activityRangeLabel} <span className="comparison-divider">vs</span> <strong>{analytics.summary.booking_activity?.previous ?? 0}</strong> {previousActivityRangeLabel}</span></div>
         </section></div>
       </div>
+      <div className="row g-4 mb-4"><div className="col-12">{renderRecentPatients()}</div></div>
       <div className="row g-4 mb-4">
         <div className="col-xl-7"><section className="tenant-insight-panel h-100">
           <div className="admin-panel-heading"><div><h3>Upcoming demand</h3><p>Appointments by scheduled date · next 7 days</p></div><button className="btn btn-sm btn-outline-primary" onClick={() => setActiveView('appointments')}>Open schedule</button></div>
@@ -1624,6 +2166,7 @@ function App() {
           <p className="plan-price">{formatCurrency(plan.monthly_price)}<span> / month</span></p>
           <p className="plan-annual">{formatCurrency(plan.annual_price)} billed annually</p>
           <div className="plan-limits">{plan.clinic_limit || 'Unlimited'} clinics <span>·</span> {plan.user_limit || 'Unlimited'} users</div>
+          <div className="small mt-2">Includes: {(plan.features || []).map((feature) => productFeatures.find((item) => item.id === feature)?.label || feature).join(' · ') || 'No product modules'}</div>
           <div className="d-flex gap-2 mt-3"><button className="btn btn-sm btn-outline-primary" onClick={() => editPlan(plan)}>Edit plan</button><button className="btn btn-sm btn-outline-danger" onClick={() => removePlan(plan)}>Delete plan</button></div>
         </section></div>)}
       </div>
@@ -1643,6 +2186,7 @@ function App() {
             <div className="col-md-3"><label className="form-label" htmlFor="plan-clinics">Clinic limit</label><input id="plan-clinics" type="number" min="1" className="form-control" placeholder="Unlimited" value={planForm.clinic_limit} onChange={(event) => setPlanForm({ ...planForm, clinic_limit: event.target.value })} /></div>
             <div className="col-md-3"><label className="form-label" htmlFor="plan-users">User limit</label><input id="plan-users" type="number" min="1" className="form-control" placeholder="Unlimited" value={planForm.user_limit} onChange={(event) => setPlanForm({ ...planForm, user_limit: event.target.value })} /></div>
           </div>
+          <fieldset className="border rounded-3 p-3 mt-3"><legend className="float-none w-auto px-2 fs-6 fw-semibold">Included features</legend><div className="row g-2">{productFeatures.map((feature) => <div className="col-md-6 col-xl-4" key={feature.id}><label className="border rounded-3 p-3 h-100 d-flex align-items-start gap-2"><input className="form-check-input mt-1" type="checkbox" disabled={feature.id === 'dashboard'} checked={planForm.features.includes(feature.id)} onChange={(event) => { const next = new Set(planForm.features); if (event.target.checked) next.add(feature.id); else next.delete(feature.id); setPlanForm({ ...planForm, features: [...next] }); }} /><span><strong>{feature.label}{feature.id === 'dashboard' ? ' · Included' : ''}</strong><small className="d-block text-muted">{feature.description}</small></span></label></div>)}</div></fieldset>
           <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingPlanId ? 'Save plan' : 'Create plan'}</button>{editingPlanId && <button type="button" className="btn btn-outline-secondary" onClick={() => { setEditingPlanId(null); setPlanForm(emptyPlan); }}>Cancel</button>}</div>
         </form>
         </div>
@@ -1650,20 +2194,53 @@ function App() {
       <section className="admin-panel">
         <div className="admin-panel-heading"><div><h3>Subscription register</h3><p>Plan and billing changes apply immediately.</p></div></div>
         <div className="table-responsive"><table className="table align-middle mb-0">
-          <thead><tr><th>Clinic</th><th>Plan</th><th>Billing</th><th>Monthly value</th><th>Status</th><th>Action</th></tr></thead>
+          <thead><tr><th>Clinic</th><th>Plan</th><th>Billing</th><th>Start date</th><th>End date</th><th>Monthly value</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>{subscriptionTenantPagination.items.map((tenant) => <tr key={tenant.id}>
             <td><div className="fw-semibold">{tenant.name}</div><small><a href={getTenantPortalUrl(tenant.domain)}>{getTenantPortalUrl(tenant.domain)}</a></small></td>
             <td><select className="form-select form-select-sm plan-select" aria-label={`Plan for ${tenant.name}`} value={tenant.plan} onChange={(event) => updateSubscription(tenant.id, { plan: event.target.value })}>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></td>
             <td><select className="form-select form-select-sm cycle-select" aria-label={`Billing cycle for ${tenant.name}`} value={tenant.billing_cycle} onChange={(event) => updateSubscription(tenant.id, { billing_cycle: event.target.value })}><option value="monthly">Monthly</option><option value="annual">Annual</option></select></td>
+            <td><input aria-label={`Subscription start date for ${tenant.name}`} className="form-control form-control-sm" type="date" value={subscriptionDateEdits[tenant.id]?.start || ''} onChange={(event) => setSubscriptionDateEdits((current) => ({ ...current, [tenant.id]: { ...(current[tenant.id] || {}), start: event.target.value } }))} /></td>
+            <td><div className="d-flex gap-1"><input aria-label={`Subscription end date for ${tenant.name}`} className="form-control form-control-sm" type="date" value={subscriptionDateEdits[tenant.id]?.end || ''} onChange={(event) => setSubscriptionDateEdits((current) => ({ ...current, [tenant.id]: { ...(current[tenant.id] || {}), end: event.target.value } }))} /><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => saveSubscriptionDates(tenant)}>Save</button></div></td>
             <td>{formatCurrency(tenant.monthly_price)}<small className="d-block text-muted">per month equivalent</small></td>
             <td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status}</span></td>
-            <td><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button></td>
-          </tr>)}{tenants.length === 0 && <tr><td colSpan="6" className="text-muted py-4">No subscriptions to manage.</td></tr>}</tbody>
+            <td>{tenant.subscription_status === 'active' ? <button className="btn btn-sm btn-outline-warning" onClick={() => updateSubscription(tenant.id, { subscription_status: 'paused' })}>Pause</button> : tenant.subscription_status === 'paused' && (!tenant.subscription_end_date || tenant.subscription_end_date >= new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })) ? <button className="btn btn-sm btn-outline-success" onClick={() => updateSubscription(tenant.id, { subscription_status: 'active' })}>Resume</button> : <button className="btn btn-sm btn-outline-success" onClick={() => renewSubscription(tenant)}>Renew</button>}</td>
+          </tr>)}{tenants.length === 0 && <tr><td colSpan="8" className="text-muted py-4">No subscriptions to manage.</td></tr>}</tbody>
         </table></div>
         <ListPagination pagination={subscriptionTenantPagination} label="clinics" />
       </section>
     </>
   );
+
+  const renderAdminPayments = () => {
+    const paymentRows = tenants.map((tenant) => {
+      const plan = plans.find((item) => item.id === tenant.plan);
+      const cycle = tenant.billing_cycle === 'annual' ? 'annual' : 'monthly';
+      const amount = Number(cycle === 'annual' ? plan?.annual_price : plan?.monthly_price) || 0;
+      return { tenant, plan, cycle, amount };
+    }).sort((left, right) => String(left.tenant.name).localeCompare(String(right.tenant.name)));
+    const activeRows = paymentRows.filter(({ tenant }) => tenant.subscription_status === 'active');
+    const monthlyEquivalent = activeRows.reduce((sum, { amount, cycle }) => sum + (cycle === 'annual' ? amount / 12 : amount), 0);
+    const yearlyCommitment = activeRows.reduce((sum, { amount, cycle }) => sum + (cycle === 'annual' ? amount : amount * 12), 0);
+    return <>
+      <div className="admin-panel-heading subscription-title"><div><h3>Clinic subscription payments</h3><p>Review each clinic’s plan price, billing cycle, and subscription period.</p></div><button className="btn btn-sm btn-outline-primary" onClick={() => setActiveView('subscriptions')}>Manage plans</button></div>
+      <div className="row g-3 mb-4">
+        {[['Active monthly equivalent', formatCurrency(monthlyEquivalent), 'Active subscriptions; annual plans normalized monthly'], ['Active annual commitment', formatCurrency(yearlyCommitment), 'Monthly subscriptions projected over 12 months'], ['Clinics with subscriptions', paymentRows.length, `${activeRows.length} active · ${paymentRows.length - activeRows.length} paused or inactive`]].map(([label, value, hint]) => <div className="col-md-4" key={label}><div className="admin-metric"><small>{label}</small><strong>{value}</strong><span>{hint}</span></div></div>)}
+      </div>
+      <section className="admin-panel"><div className="admin-panel-heading"><div><h3>Subscription ledger</h3><p>Plan pricing is the subscription amount. Payment collection and invoice history are not recorded in this system.</p></div></div>
+        <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Clinic / tenant</th><th>Plan</th><th>Billing cycle</th><th>Subscription amount</th><th>Monthly equivalent</th><th>Period</th><th>Status</th><th>Manage</th></tr></thead><tbody>
+          {paymentRows.length ? paymentRows.map(({ tenant, plan, cycle, amount }) => <tr key={tenant.id}>
+            <td className="fw-semibold">{tenant.name}<small className="d-block text-muted">{tenant.domain} · {tenant.admin_email}</small></td>
+            <td>{plan?.name || tenant.plan || '—'}</td><td className="text-capitalize">{cycle}</td>
+            <td>{formatCurrency(amount)}<small className="d-block text-muted">{cycle === 'annual' ? 'billed yearly' : 'billed monthly'}</small></td>
+            <td>{formatCurrency(cycle === 'annual' ? amount / 12 : amount)}</td>
+            <td>{tenant.subscription_start_date || '—'}<small className="d-block text-muted">to {tenant.subscription_end_date || '—'}</small></td>
+            <td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status || 'inactive'}</span></td>
+            <td className="text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setActiveView('tenants'); editTenant(tenant); }}>Edit subscription</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'}`} onClick={() => tenant.subscription_status === 'expired' ? renewSubscription(tenant) : updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : tenant.subscription_status === 'expired' ? 'Renew' : 'Activate'}</button></td>
+          </tr>) : <tr><td colSpan="8" className="text-muted py-4">No tenant subscriptions yet.</td></tr>}
+        </tbody></table></div>
+      </section>
+    </>;
+  };
 
   const renderLanding = () => (
     <div className="site-shell">
@@ -1717,7 +2294,7 @@ function App() {
           <div className="subscription-cards">{marketedPlanPagination.items.map((plan) => <article className={`subscription-card ${plan.id === 'growth' ? 'subscription-card-featured' : ''}`} key={plan.id}>
             {plan.id === 'growth' && <span className="subscription-popular">MOST POPULAR</span>}
             <p className="section-kicker">{plan.name.toUpperCase()}</p><h3>{formatCurrency(plan.monthly_price)}<small> / month</small></h3><p className="subscription-yearly">{formatCurrency(plan.annual_price)} billed annually</p>
-            <ul><li>{plan.clinic_limit || 'Unlimited'} {plan.clinic_limit === 1 ? 'clinic' : 'clinics'}</li><li>{plan.user_limit || 'Unlimited'} team members</li><li>Patient and appointment workspace</li><li>Agent workflow and clinic-hour controls</li><li>Reports and appointment exports</li></ul>
+            <ul><li>{plan.clinic_limit || 'Unlimited'} {plan.clinic_limit === 1 ? 'clinic' : 'clinics'}</li><li>{plan.user_limit || 'Unlimited'} team members</li>{(plan.features || []).map((feature) => <li key={feature}>{productFeatures.find((item) => item.id === feature)?.label || feature}</li>)}</ul>
             <button className={plan.id === 'growth' ? 'button-dark' : 'button-outline'} onClick={() => { setClinicInterestForm({ ...emptyClinicInterest, plan: plan.id }); document.getElementById('clinic-request')?.scrollIntoView({ behavior: 'smooth' }); }}>Request {plan.name} <span aria-hidden="true">→</span></button>
           </article>)}</div>
           <ListPagination pagination={marketedPlanPagination} label="plans" />
@@ -1841,18 +2418,48 @@ function App() {
     const clinicAdmin = session.role === 'tenant_admin';
     const grantedPermissions = new Set(session.permissions || []);
     const canManage = (module) => clinicAdmin || grantedPermissions.has(`${module}:manage`);
+    const canReconcilePayments = clinicAdmin || grantedPermissions.has('payments:reconcile') || grantedPermissions.has('payments:manage');
+    const selectedTransactionRows = transactions.filter((transaction) => selectedTransactionIds.includes(String(transaction.appointment_id)));
+    const allTransactionPageSelected = transactionPagination.items.length > 0 && transactionPagination.items.every((transaction) => selectedTransactionIds.includes(String(transaction.appointment_id)));
+    const toggleTransactionSelection = (appointmentId) => setSelectedTransactionIds((current) => current.includes(String(appointmentId)) ? current.filter((id) => id !== String(appointmentId)) : [...current, String(appointmentId)]);
+    const toggleTransactionPageSelection = () => setSelectedTransactionIds((current) => allTransactionPageSelected
+      ? current.filter((id) => !transactionPagination.items.some((transaction) => String(transaction.appointment_id) === id))
+      : [...new Set([...current, ...transactionPagination.items.map((transaction) => String(transaction.appointment_id))])]);
+    const transactionCell = (transaction, key) => {
+      if (['consultation_fee', 'discount_amount', 'additional_charges', 'total_amount', 'amount_paid', 'balance_due'].includes(key)) return formatINR(transaction[key]);
+      if (key === 'recorded_by') return transaction.recorded_by || 'Not captured';
+      if (key === 'payment_proof_name') return transaction.payment_proof_data_url ? transaction.payment_proof_name || 'Attached' : '—';
+      if (key === 'transaction_id') return transaction.transaction_id || 'Unpaid';
+      if (key === 'payment_method') return String(transaction.payment_method || 'unpaid').replaceAll('_', ' ');
+      if (key === 'payment_status') return <span className={`status-pill ${transaction.payment_status === 'paid' ? 'completed' : transaction.payment_status === 'partial' ? 'confirmed' : 'cancelled'}`}>{transaction.payment_status || 'unpaid'}</span>;
+      if (key === 'updated_at' || key === 'reconciled_at') return transaction[key] ? new Date(transaction[key]).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '—';
+      if (key === 'reconciled_by') return transaction.reconciled_by || '—';
+      return transaction[key] || '—';
+    };
+    const selectedAppointmentRows = bookings.filter((booking) => selectedAppointmentIds.includes(String(booking.id)));
+    const allAppointmentPageSelected = appointmentPagination.items.length > 0 && appointmentPagination.items.every((booking) => selectedAppointmentIds.includes(String(booking.id)));
+    const toggleAppointmentSelection = (appointmentId) => setSelectedAppointmentIds((current) => current.includes(String(appointmentId)) ? current.filter((id) => id !== String(appointmentId)) : [...current, String(appointmentId)]);
+    const toggleAppointmentPageSelection = () => setSelectedAppointmentIds((current) => allAppointmentPageSelected
+      ? current.filter((id) => !appointmentPagination.items.some((booking) => String(booking.id) === id))
+      : [...new Set([...current, ...appointmentPagination.items.map((booking) => String(booking.id))])]);
+    const planFeatureSet = new Set(tenantData?.plan_features || []);
+    const hasPlanFeature = (feature) => !Array.isArray(tenantData?.plan_features) || planFeatureSet.has(feature);
     const workspaceNavigation = superAdmin
-      ? [['overview', 'Overview', '⌂'], ['leads', 'Clinic requests', '✳'], ['tenants', 'Tenants', '▦'], ['subscriptions', 'Plans & subscriptions', '◈']]
+      ? [['overview', 'Overview', '⌂'], ['leads', 'Clinic requests', '✳'], ['tenants', 'Tenants', '▦'], ['payments', 'Payments', '₹'], ['subscriptions', 'Plans & subscriptions', '◈']]
       : [
         ['overview', 'Overview', '⌂', 'overview:view'], ['agents', 'AI receptionist', '◉', 'agents:view'],
         ['doctors', 'Doctors', '✚', 'doctors:view', 'doctors:manage'], ['patients', 'Patients', '♙', 'patients:view', 'patients:manage'],
-        ['appointments', 'Appointments', '▣', 'appointments:view', 'appointments:manage'], ['reports', 'Reports', '▥', 'reports:view'],
-      ].filter(([, , , viewPermission, managePermission]) => clinicAdmin || grantedPermissions.has(viewPermission) || (managePermission && grantedPermissions.has(managePermission)))
+        ['appointments', 'Appointments', '▣', 'appointments:view', 'appointments:manage'], ['payments', 'Payments & transactions', '₹', 'payments:view', 'payments:manage'], ['fees', 'Fees reconciliation', '⇄', '', 'payments:manage', 'payments:reconcile'], ['reports', 'Reports', '▥', 'reports:view'],
+      ].filter(([view, , , viewPermission, managePermission, reconcilePermission]) => {
+        const requiredFeature = { agents: 'ai_receptionist', doctors: 'doctors', patients: 'patients', appointments: 'appointments', payments: 'payment_transactions', fees: 'fee_reconciliation', reports: 'reports' }[view];
+        const requiredFeaturesIncluded = hasPlanFeature(requiredFeature) && (['payments', 'fees'].includes(view) ? hasPlanFeature('appointments') : true);
+        return view === 'overview' || (requiredFeaturesIncluded && (clinicAdmin || (viewPermission && grantedPermissions.has(viewPermission)) || (managePermission && grantedPermissions.has(managePermission)) || (reconcilePermission && grantedPermissions.has(reconcilePermission)) || grantedPermissions.has('overview:today_plan')));
+      })
         .map(([view, label, icon]) => [view, label, icon])
-        .concat(clinicAdmin ? [['staff', 'Staff access', '♧']] : []);
+        .concat(clinicAdmin && hasPlanFeature('staff_accounts') ? [['staff', 'Staff accounts', '♧'], ['permissions', 'Roles & permissions', '☷']] : []);
     const pageTitle = superAdmin
-      ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic requests' : 'Tenant management'
-      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'doctors' ? 'Doctor directory' : activeView === 'patients' ? 'Patient directory' : activeView === 'staff' ? 'Staff access' : 'Appointments';
+      ? activeView === 'overview' ? 'Platform overview' : activeView === 'subscriptions' ? 'Plans & subscriptions' : activeView === 'leads' ? 'Clinic requests' : activeView === 'payments' ? 'Clinic payments' : 'Tenant management'
+      : activeView === 'overview' ? 'Good to see you' : activeView === 'reports' ? 'Clinic reports' : activeView === 'agents' ? 'AI receptionist' : activeView === 'doctors' ? 'Doctor directory' : activeView === 'patients' ? 'Patient directory' : activeView === 'payments' ? 'Payments & transactions' : activeView === 'fees' ? 'Fees reconciliation' : activeView === 'staff' ? 'Staff accounts' : activeView === 'permissions' ? 'Staff permissions' : 'Appointments';
     const workspacePlan = String(tenantData?.plan || '').replace(/\b\w/g, (char) => char.toUpperCase());
     const workspaceRegion = String(tenantData?.region || '').trim();
     const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: voiceAgent.timezone || 'Asia/Kolkata' }).format(new Date());
@@ -1861,12 +2468,12 @@ function App() {
       <div className={`page-shell dashboard-shell ${superAdmin ? 'admin-workspace' : 'clinic-workspace'}`}>
         <div className="workspace-layout">
           <aside className="workspace-sidebar">
-            <a className="workspace-brand" href="#workspace-home" aria-label={`${superAdmin ? 'Carestac' : tenantBrand.shortName} workspace home`}><span className="workspace-brand-mark">{superAdmin ? 'C' : tenantBrand.shortName.charAt(0).toUpperCase()}</span><span>{superAdmin ? 'Carestac' : tenantBrand.shortName}<small>{superAdmin ? 'PLATFORM WORKSPACE' : 'CLINIC WORKSPACE'}</small></span></a>
+            <a className="workspace-brand" href="/" onClick={(event) => { event.preventDefault(); setActiveView('overview'); }} aria-label={`${superAdmin ? 'Carestac' : tenantBrand.shortName} workspace home`}><span className="workspace-brand-mark">{superAdmin ? 'C' : tenantBrand.shortName.charAt(0).toUpperCase()}</span><span>{superAdmin ? 'Carestac' : tenantBrand.shortName}<small>{superAdmin ? 'PLATFORM WORKSPACE' : 'CLINIC WORKSPACE'}</small></span></a>
             <div className="sidebar-clinic-card"><span className="clinic-avatar">{superAdmin ? 'C' : tenantBrand.shortName.charAt(0)}</span><span><strong title={superAdmin ? 'Carestac platform' : displayedTenant}>{superAdmin ? 'Carestac platform' : displayedTenant}</strong><small>{superAdmin ? 'Super admin workspace' : workspacePlan ? `${workspacePlan} plan${workspaceRegion ? ` · ${workspaceRegion}` : ''}` : `${workspaceRegion || 'Clinic'} workspace`}</small></span><i aria-hidden="true">⌄</i></div>
             <p className="sidebar-section-label">WORKSPACE</p>
             <nav className="workspace-nav" aria-label="Workspace navigation">
               {workspaceNavigation.map(([view, label, icon]) => (
-                <button key={view} className={`workspace-nav-link ${activeView === view ? 'active' : ''}`} aria-current={activeView === view ? 'page' : undefined} onClick={() => { setActiveView(view); setError(''); setNotice(''); if (view === 'staff') loadStaff(); }}>
+                <button key={view} className={`workspace-nav-link ${activeView === view ? 'active' : ''}`} aria-current={activeView === view ? 'page' : undefined} onClick={() => { setActiveView(view); setError(''); setNotice(''); if (view === 'staff' || view === 'permissions') loadStaff(); }}>
                   <span className="workspace-nav-icon" aria-hidden="true">{icon}</span><span className="workspace-nav-label">{label}</span>
                   {!superAdmin && view === 'appointments' && upcomingBookings.length > 0 && <span className="workspace-nav-count">{upcomingBookings.length}</span>}
                 </button>
@@ -1922,7 +2529,7 @@ function App() {
 
             <div className="workspace-content">
               <div className="workspace-page-heading">
-                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'doctors' ? 'Manage the clinic roster used by availability checks and the voice agent.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : 'Track clinic activity and export the records your team needs.'}</p></div>
+                <div><p className="workspace-date">{todayLabel}</p><h1>{pageTitle}<span className="heading-period">.</span></h1><p>{superAdmin ? 'A clear view of your clinic network and operations.' : activeView === 'overview' ? 'Here’s what’s happening across your clinic today.' : activeView === 'appointments' ? 'Manage the day, keep visits moving, and stay on top of follow-ups.' : activeView === 'patients' ? 'Search and manage your clinic’s patient records.' : activeView === 'doctors' ? 'Manage the clinic roster used by availability checks and the voice agent.' : activeView === 'agents' ? 'Tune the information and voice experience your patients receive.' : activeView === 'payments' ? 'Review completed visits, payment methods, and outstanding balances.' : activeView === 'fees' ? 'Match completed visit payments against the daily or monthly clinic ledger.' : 'Track clinic activity and export the records your team needs.'}</p></div>
               </div>
 
               {(notice || error) && <div className={`alert ${error ? 'alert-danger' : 'alert-success'} alert-dismissible`} role="status">
@@ -1983,6 +2590,7 @@ function App() {
 
               {superAdmin && activeView === 'overview' && renderAdminOverview()}
               {superAdmin && activeView === 'subscriptions' && renderSubscriptions()}
+              {superAdmin && activeView === 'payments' && renderAdminPayments()}
               {superAdmin && activeView === 'leads' && <div className="card border-0 shadow-sm rounded-4 mb-4"><div className="card-body"><h4 className="mb-1">New clinic interest</h4><p className="text-muted mb-3">Follow up with clinics that requested subscription information or a demo.</p><div className="table-responsive"><table className="table align-middle"><thead><tr><th>Clinic</th><th>Contact</th><th>Phone</th><th>Plan</th><th>Received</th></tr></thead><tbody>{clinicInterests.length ? clinicInterestPagination.items.map((lead) => <tr key={lead.id}><td className="fw-semibold">{lead.clinic_name}<small className="d-block text-muted">{lead.email}</small></td><td>{lead.contact_name}</td><td><a href={`tel:${lead.phone}`}>{lead.phone}</a></td><td className="text-capitalize">{lead.plan}</td><td>{new Date(lead.created_at).toLocaleDateString('en-IN')}</td></tr>) : <tr><td colSpan="5" className="text-muted py-4">No clinic requests yet.</td></tr>}</tbody></table></div><ListPagination pagination={clinicInterestPagination} label="clinic requests" /></div></div>}
 
               {superAdmin && activeView === 'tenants' && <div className="card border-0 shadow-sm rounded-4 mb-4">
@@ -1998,7 +2606,7 @@ function App() {
                       <td className="text-capitalize">{tenant.plan}<small className="d-block text-muted">{tenant.billing_cycle}</small></td>
                       <td><div>{telephonyTenantId === tenant.id ? (telephonyForm.phone_number || 'Not assigned') : (tenant.telephony?.phone_number || 'Not assigned')}</div><small className="text-muted">{telephonyTenantId === tenant.id ? `${telephonyForm.voice_provider === 'exotel_voicebot' ? 'Exotel Voicebot' : 'Sarvam'} · editing (unsaved)` : tenant.telephony?.voice_provider === 'exotel_voicebot' ? (tenant.telephony?.enabled ? 'Exotel Voicebot · live' : 'Exotel Voicebot · console setup') : tenant.telephony?.deployment_status === 'active' ? 'Sarvam inbound active' : 'Not deployed'}</small></td>
                       <td><span className={`status-pill ${tenant.subscription_status}`}>{tenant.subscription_status}</span></td>
-                      <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => configureClinicTelephony(tenant)}>Configure calling</button><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editTenant(tenant)}>Edit</button><button className="btn btn-sm btn-outline-secondary me-2" onClick={() => openTenantPasswordForm(tenant)}>Set password</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'} me-2`} onClick={() => updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : 'Activate'}</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeTenant(tenant)}>Delete</button></td>
+                      <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => configureClinicTelephony(tenant)}>Configure calling</button><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editTenant(tenant)}>Edit</button><button className="btn btn-sm btn-outline-secondary me-2" onClick={() => openTenantPasswordForm(tenant)}>Set password</button><button className={`btn btn-sm ${tenant.subscription_status === 'active' ? 'btn-outline-warning' : 'btn-outline-success'} me-2`} onClick={() => tenant.subscription_status === 'expired' ? renewSubscription(tenant) : updateSubscription(tenant.id, { subscription_status: tenant.subscription_status === 'active' ? 'paused' : 'active' })}>{tenant.subscription_status === 'active' ? 'Pause' : tenant.subscription_status === 'expired' ? 'Renew' : 'Activate'}</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeTenant(tenant)}>Delete</button></td>
                     </tr>) : <tr><td colSpan="6" className="text-muted">No tenants yet.</td></tr>}</tbody>
                   </table></div>
                   <ListPagination pagination={tenantPagination} label="clinics" />
@@ -2064,10 +2672,31 @@ function App() {
                 </div>
               </div>}
 
+              {!superAdmin && clinicAdmin && activeView === 'permissions' && <div className="row g-4 mb-4">
+                <div className="col-12"><section className="admin-panel">
+                  <div className="admin-panel-heading"><div><h3>Access control</h3><p>Set the role baseline, then make specific user-level exceptions where needed. Plan features remain controlled by the platform subscription.</p></div><button type="button" className="btn btn-sm btn-primary" onClick={() => { setEditingRoleId(null); setRoleForm(emptyClinicRole); setRoleFormOpen((open) => !open); }}>Create role</button></div>
+                  {roleFormOpen && <form className="border rounded-3 p-3 mb-4" onSubmit={submitRoleForm}>
+                    <div className="row g-3 mb-3"><div className="col-md-4"><label className="form-label" htmlFor="clinic-role-id">Role key</label><input id="clinic-role-id" className="form-control" required minLength="2" maxLength="40" pattern="[a-z][a-z0-9_-]*" value={roleForm.id} disabled={Boolean(editingRoleId)} onChange={(event) => setRoleForm({ ...roleForm, id: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })} /><small className="text-muted">For example: lab_technician or front_desk.</small></div><div className="col-md-8"><label className="form-label" htmlFor="clinic-role-name">Role name</label><input id="clinic-role-name" className="form-control" required minLength="2" maxLength="60" value={roleForm.name} onChange={(event) => setRoleForm({ ...roleForm, name: event.target.value })} /></div></div>
+                    <h5 className="mb-1">Role permissions</h5><p className="small text-muted">This is the default access for everyone assigned to this role. Manage also grants View. Payments → Reconcile only can match ledger entries and request billing changes; only a clinic admin approves and applies those requests. Manage allows direct billing edits.</p>
+                    <div className="row g-2">{STAFF_PERMISSION_GROUPS.map(({ label, view, manage, reconcile }) => <div className="col-md-6 col-xl-4" key={view}><div className="border rounded-3 p-3 h-100"><strong className="d-block mb-3">{label}</strong><div className="d-flex flex-wrap gap-3">{[[view, view === 'payments:view' ? 'View only' : 'View']].concat(manage ? [[manage, 'Manage']] : [], reconcile ? [[reconcile, 'Reconcile only']] : []).map(([permission, permissionLabel]) => <label className="d-flex align-items-center gap-2 small" key={permission}><input className="form-check-input mt-0" type="checkbox" checked={roleForm.permissions.includes(permission)} onChange={(event) => { const next = new Set(roleForm.permissions); if (event.target.checked) { next.add(permission); if (permission.endsWith(':manage')) next.add(view); if (permission === 'overview:today_plan') next.add('overview:view'); } else { next.delete(permission); if (permission === view && manage) next.delete(manage); if (permission === 'overview:view') next.delete('overview:today_plan'); } setRoleForm({ ...roleForm, permissions: [...next] }); }} /><span>{permissionLabel}</span></label>)}</div></div></div>)}</div>
+                    <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : editingRoleId ? 'Save role' : 'Create role'}</button><button type="button" className="btn btn-outline-secondary" onClick={() => { setRoleForm(emptyClinicRole); setEditingRoleId(null); setRoleFormOpen(false); }}>Cancel</button></div>
+                  </form>}
+                  <div className="row g-3">{roles.map((role) => <div className="col-md-6 col-xl-4" key={role.id}><article className="border rounded-3 p-3 h-100"><div className="d-flex justify-content-between align-items-start gap-2"><div><h4 className="h6 mb-1">{role.name}</h4><small className="text-muted">{role.id} · {role.members} member{role.members === 1 ? '' : 's'}</small></div>{role.built_in && <span className="status-pill confirmed">Built in</span>}</div><div className="small mt-3 mb-3 d-flex flex-wrap gap-1">{STAFF_PERMISSION_GROUPS.filter(({ view, manage, reconcile }) => role.permissions.includes(view) || (manage && role.permissions.includes(manage)) || (reconcile && role.permissions.includes(reconcile))).map(({ label }) => <span className="badge text-bg-light" key={label}>{label}</span>)}</div><div className="d-flex gap-2"><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => editClinicRole(role)}>Edit role</button>{!role.built_in && <button type="button" className="btn btn-sm btn-outline-danger" disabled={role.members > 0} onClick={() => removeClinicRole(role)}>Delete</button>}</div></article></div>)}</div>
+                </section></div>
+                <div className="col-12"><section className="admin-panel">
+                  <div className="admin-panel-heading"><div><h3>User-level access overrides</h3><p>Inherit keeps the role setting. Allow adds one permission; Deny removes it for this user only.</p></div></div>
+                  {staff.length ? <form onSubmit={savePermissionOverrides}>
+                    <div className="row g-3 align-items-end mb-3"><div className="col-md-6"><label className="form-label" htmlFor="permission-user">Staff member</label><select id="permission-user" className="form-select" value={permissionUserId} onChange={(event) => selectPermissionUser(event.target.value)}>{staff.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.role_name}</option>)}</select></div><div className="col-md-6"><p className="small text-muted mb-0">Role: <strong>{staff.find((member) => member.id === permissionUserId)?.role_name || '—'}</strong>. User overrides are applied after the role permissions.</p></div></div>
+                    <div className="row g-2">{STAFF_PERMISSION_GROUPS.map(({ label, view, manage, reconcile }) => <div className="col-md-6 col-xl-4" key={view}><div className="border rounded-3 p-3 h-100"><strong className="d-block mb-3">{label}</strong>{[[view, view === 'payments:view' ? 'View only' : 'View']].concat(manage ? [[manage, 'Manage']] : [], reconcile ? [[reconcile, 'Reconcile only']] : []).map(([permission, permissionLabel]) => { const value = permissionOverridesForm.deny.includes(permission) ? 'deny' : permissionOverridesForm.allow.includes(permission) ? 'allow' : 'inherit'; return <label className="d-flex justify-content-between align-items-center gap-2 small mb-2" key={permission}><span>{permissionLabel}</span><select className="form-select form-select-sm w-auto" aria-label={`${label} ${permissionLabel} override`} value={value} onChange={(event) => { const nextAllow = permissionOverridesForm.allow.filter((item) => item !== permission); const nextDeny = permissionOverridesForm.deny.filter((item) => item !== permission); if (event.target.value === 'allow') nextAllow.push(permission); if (event.target.value === 'deny') nextDeny.push(permission); setPermissionOverridesForm({ allow: nextAllow, deny: nextDeny }); }}><option value="inherit">Inherit role</option><option value="allow">Allow</option><option value="deny">Deny</option></select></label>; })}</div></div>)}</div>
+                    <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save user overrides'}</button><button type="button" className="btn btn-outline-secondary" onClick={() => setPermissionOverridesForm(emptyPermissionOverrides)}>Reset to role defaults</button></div>
+                  </form> : <p className="text-muted mb-0">Create a staff account to manage user-level access overrides.</p>}
+                </section></div>
+              </div>}
+
               {!superAdmin && clinicAdmin && activeView === 'staff' && <div className="row g-4 mb-4">
                 <div className="col-12"><section className="admin-panel">
-                  <div className="admin-panel-heading"><div><h3>Clinic staff access</h3><p>Create receptionist accounts and choose which clinic sections each account can view or manage.</p></div><span className="status-pill confirmed">Role based access</span></div>
-                  <button type="button" className={`workspace-section-toggle ${staffFormOpen ? 'is-open' : ''}`} aria-expanded={staffFormOpen} aria-controls="staff-account-fields" onClick={() => { setStaffFormOpen((open) => !open); if (!staffForm.id) setStaffForm({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) }); }}>
+                  <div className="admin-panel-heading"><div><h3>Clinic staff accounts</h3><p>Create accounts and assign a role. Manage role defaults and individual exceptions in Permissions.</p></div><span className="status-pill confirmed">Role based access</span></div>
+                  <button type="button" className={`workspace-section-toggle ${staffFormOpen ? 'is-open' : ''}`} aria-expanded={staffFormOpen} aria-controls="staff-account-fields" onClick={() => { setStaffFormOpen((open) => !open); if (!staffForm.id) setStaffForm({ id: null, name: '', email: '', password: '', role: 'receptionist' }); }}>
                     <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">{staffForm.id ? 'Edit staff access' : 'Add clinic staff'}</span><span className="workspace-section-toggle-description">Each staff member signs in with their own email and password.</span></span><span className="workspace-section-toggle-action">{staffFormOpen ? 'Collapse −' : 'Expand +'}</span>
                   </button>
                   <div id="staff-account-fields" className="mt-3" hidden={!staffFormOpen}>
@@ -2075,19 +2704,18 @@ function App() {
                       <div className="row g-3 mb-4">
                         <div className="col-md-4"><label className="form-label" htmlFor="staff-name">Staff name</label><input id="staff-name" className="form-control" required minLength="2" maxLength="120" value={staffForm.name} onChange={(event) => setStaffForm({ ...staffForm, name: event.target.value })} /></div>
                         <div className="col-md-4"><label className="form-label" htmlFor="staff-email">Login email</label><input id="staff-email" className="form-control" type="email" required value={staffForm.email} onChange={(event) => setStaffForm({ ...staffForm, email: event.target.value })} /></div>
+                        <div className="col-md-4"><label className="form-label" htmlFor="staff-role">Staff role</label><select id="staff-role" className="form-select" value={staffForm.role || 'receptionist'} onChange={(event) => setStaffForm({ ...staffForm, role: event.target.value })}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></div>
                         <div className="col-md-4"><label className="form-label" htmlFor="staff-password">{staffForm.id ? 'New password (optional)' : 'Temporary password'}</label><input id="staff-password" className="form-control" type="password" autoComplete="new-password" minLength="10" maxLength="72" required={!staffForm.id} value={staffForm.password} onChange={(event) => setStaffForm({ ...staffForm, password: event.target.value })} /><small className="text-muted">At least 10 characters. Share it securely with this staff member.</small></div>
                       </div>
-                      <h5 className="mb-1">Permissions</h5><p className="small text-muted">AI workflow is always view only for receptionist accounts. Staff access and billing controls remain clinic admin only.</p>
-                      <div className="row g-2">{STAFF_PERMISSION_GROUPS.map(({ label, view, manage }) => <div className="col-md-6 col-xl-4" key={view}><div className="border rounded-3 p-3 h-100 d-flex align-items-center justify-content-between gap-3"><strong>{label}</strong><div className="d-flex gap-3">{[[view, 'View']].concat(manage ? [[manage, 'Manage']] : []).map(([permission, permissionLabel]) => <label className="d-flex align-items-center gap-1 small" key={permission}><input className="form-check-input mt-0" type="checkbox" checked={staffForm.permissions.includes(permission)} disabled={view === 'agents:view' && permission === 'agents:view'} onChange={(event) => { const next = new Set(staffForm.permissions); if (event.target.checked) { next.add(permission); if (permission.endsWith(':manage')) next.add(view); } else { next.delete(permission); if (permission === view && manage) next.delete(manage); } setStaffForm({ ...staffForm, permissions: [...next] }); }} /><span>{permissionLabel}</span></label>)}</div></div></div>)}</div>
-                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : staffForm.id ? 'Save staff access' : 'Create staff account'}</button>{staffForm.id && <button type="button" className="btn btn-outline-secondary" onClick={() => { setStaffForm({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) }); setStaffFormOpen(false); }}>Cancel edit</button>}</div>
+                      <p className="small text-muted">Role permissions are configured in Permissions. Per-user exceptions can be set there without changing the role.</p>
+                      <div className="d-flex gap-2 mt-3"><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : staffForm.id ? 'Save staff account' : 'Create staff account'}</button>{staffForm.id && <button type="button" className="btn btn-outline-secondary" onClick={() => { setStaffForm({ id: null, name: '', email: '', password: '', role: 'receptionist' }); setStaffFormOpen(false); }}>Cancel edit</button>}</div>
                     </form>
                   </div>
                 </section></div>
-                <div className="col-12"><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Staff accounts</h3><p>{filteredStaff.length} of {staff.length} receptionist {staff.length === 1 ? 'account' : 'accounts'} for this clinic</p></div></div>
+                <div className="col-12"><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Staff accounts</h3><p>{filteredStaff.length} of {staff.length} clinic staff account{staff.length === 1 ? '' : 's'}</p></div></div>
                   <div className="workspace-table-tools">
                     <div className="workspace-search"><label className="visually-hidden" htmlFor="staff-search">Search staff accounts</label><span aria-hidden="true">⌕</span><input id="staff-search" className="form-control" placeholder={`Search ${STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => column.label.toLowerCase()).join(', ')}`} value={staffQuery} onChange={(event) => setStaffQuery(event.target.value)} /></div>
-                    <label className="visually-hidden" htmlFor="staff-role-filter">Filter staff by role</label><select id="staff-role-filter" className="form-select workspace-status-filter" value={staffRoleFilter} onChange={(event) => setStaffRoleFilter(event.target.value)}><option value="all">All roles</option><option value="receptionist">Receptionist</option></select>
-                    <label className="visually-hidden" htmlFor="staff-permission-filter">Filter by granted access</label><select id="staff-permission-filter" className="form-select workspace-status-filter" value={staffPermissionFilter} onChange={(event) => setStaffPermissionFilter(event.target.value)}><option value="all">Any access</option>{STAFF_PERMISSION_GROUPS.flatMap(({ label, view, manage }) => [[view, `${label} · View`], ...(manage ? [[manage, `${label} · Manage`]] : [])]).map(([permission, label]) => <option key={permission} value={permission}>{label}</option>)}</select>
+                    <label className="visually-hidden" htmlFor="staff-role-filter">Filter staff by role</label><select id="staff-role-filter" className="form-select workspace-status-filter" value={staffRoleFilter} onChange={(event) => setStaffRoleFilter(event.target.value)}><option value="all">All roles</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select>
                     <span className="workspace-result-count">{filteredStaff.length} of {staff.length} accounts</span>
                     <details className="patient-column-picker">
                       <summary className="btn btn-sm btn-outline-secondary">Choose columns</summary>
@@ -2095,9 +2723,9 @@ function App() {
                         {STAFF_TABLE_COLUMNS.map((column) => <label key={column.key}><input type="checkbox" checked={staffColumns.includes(column.key)} disabled={staffColumns.length === 1 && staffColumns.includes(column.key)} onChange={() => setStaffColumns((current) => current.includes(column.key) ? current.filter((key) => key !== column.key) : [...current, column.key])} /> {column.label}</label>)}
                       </div>
                     </details>
-                    {(staffQuery || staffRoleFilter !== 'all' || staffPermissionFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setStaffQuery(''); setStaffRoleFilter('all'); setStaffPermissionFilter('all'); }}>Clear filters</button>}
+                    {(staffQuery || staffRoleFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setStaffQuery(''); setStaffRoleFilter('all'); }}>Clear filters</button>}
                   </div>
-                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr>{STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => <th key={column.key}>{column.label}</th>)}<th className="text-end">Actions</th></tr></thead><tbody>{filteredStaff.length ? staffPagination.items.map((member) => <tr key={member.id}>{STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => <td key={column.key}>{column.key === 'role' ? <span className="text-capitalize">{String(member.role || '').replace('_', ' ')}</span> : column.key === 'permissions' ? column.value(member) === 'No sections assigned' ? <span className="text-muted">No sections assigned</span> : column.value(member) : column.value(member) || '-'}</td>)}<td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', permissions: member.permissions || [] }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit access</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan={staffColumns.length + 1} className="text-muted py-4">{staff.length ? 'No staff accounts match those filters.' : 'No staff accounts yet. Add a receptionist above.'}</td></tr>}</tbody></table></div>
+                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr>{STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => <th key={column.key}>{column.label}</th>)}<th className="text-end">Actions</th></tr></thead><tbody>{filteredStaff.length ? staffPagination.items.map((member) => <tr key={member.id}>{STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => <td key={column.key}>{column.key === 'role' ? <span className="text-capitalize">{String(member.role_name || member.role || '').replace('_', ' ')}</span> : column.value(member) || '-'}</td>)}<td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', role: member.role || 'receptionist' }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit account</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan={staffColumns.length + 1} className="text-muted py-4">{staff.length ? 'No staff accounts match those filters.' : 'No staff accounts yet. Add a receptionist above.'}</td></tr>}</tbody></table></div>
                   <ListPagination pagination={staffPagination} label="staff accounts" />
                 </section></div>
               </div>}
@@ -2173,6 +2801,15 @@ function App() {
 
               {!superAdmin && activeView === 'reports' && <div className="tenant-report-stack">
                 <section className="tenant-insight-panel">
+                  <div className="admin-panel-heading"><div><h3>Monthly booking report</h3><p>Counts use the appointment date, so past bookings remain in the month they were scheduled.</p></div><label className="d-flex align-items-center gap-2"><span className="visually-hidden">Choose report month</span><input aria-label="Choose report month" className="form-control" type="month" value={reportMonth} onChange={(event) => { if (event.target.value) setReportMonth(event.target.value); }} /><button type="button" className="btn btn-outline-primary text-nowrap" onClick={() => exportTenantCsv('bookings', monthlyBookings)} disabled={!monthlyBookings.length}>Download month CSV</button></label></div>
+                  <div className="row g-3 mb-4">
+                    <div className="col-6 col-xl-3"><div className="tenant-kpi"><small>Total bookings</small><strong>{monthlyBookings.length}</strong><span>For {reportMonth}</span></div></div>
+                    {monthlyBookingStatuses.map(({ status, count }) => <div className="col-6 col-xl-2" key={status}><div className="tenant-kpi"><small className="text-capitalize">{status.replace('_', ' ')}</small><strong>{count}</strong><span>Appointments</span></div></div>)}
+                  </div>
+                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Date &amp; time</th><th>Patient</th><th>Doctor</th><th>Reason</th><th>Status</th></tr></thead><tbody>{monthlyBookingPagination.total ? monthlyBookingPagination.items.map((booking) => <tr key={booking.id}><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.reason || '—'}</td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td></tr>) : <tr><td colSpan="5" className="text-muted py-4">No bookings for {reportMonth}.</td></tr>}</tbody></table></div>
+                  <ListPagination pagination={monthlyBookingPagination} label="monthly bookings" />
+                </section>
+                <section className="tenant-insight-panel">
                   <div className="admin-panel-heading"><div><h3>Clinic performance export</h3><p>Download current tenant records for finance, operations, and follow-up reviews.</p></div></div>
                   <div className="report-export-row">
                     <div><strong>Patient directory</strong><span>{patients.length} patient records · contact and status fields</span></div>
@@ -2189,7 +2826,70 @@ function App() {
                 </div>
               </div>}
 
-              {!superAdmin && (activeView === 'overview' || activeView === 'patients' || activeView === 'appointments') && <div className="card border-0 shadow-sm rounded-4">
+              {!superAdmin && activeView === 'appointments' && <section className="tenant-insight-panel mb-4">
+                <button type="button" className={`workspace-section-toggle ${waitlistOpen ? 'is-open' : ''}`} aria-expanded={waitlistOpen} aria-controls="cancellation-waitlist-fields" onClick={() => setWaitlistOpen((open) => !open)}>
+                  <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">Cancellation waitlist</span><span className="workspace-section-toggle-description">Match waiting patients against future cancelled slots. Contact them manually; no calls or messages are sent automatically.</span></span>
+                  <span className="workspace-section-toggle-action">{waitlistOpen ? 'Collapse −' : 'Expand +'}</span>
+                </button>
+                <div id="cancellation-waitlist-fields" className="mt-3" hidden={!waitlistOpen}>
+                {canManage('appointments') && <div className="d-flex justify-content-end mb-3"><button type="button" className="btn btn-sm btn-primary" onClick={() => setWaitlistFormOpen((open) => !open)}>{waitlistFormOpen ? 'Close form' : 'Add patient'}</button></div>}
+                {waitlistFormOpen && canManage('appointments') && <form className="row g-2 mb-4" onSubmit={addWaitlistEntry}>
+                  <div className="col-md-3"><label className="form-label" htmlFor="waitlist-name">Patient name</label><input id="waitlist-name" className="form-control" required minLength="2" maxLength="120" value={waitlistForm.name} onChange={(event) => setWaitlistForm({ ...waitlistForm, name: event.target.value })} /></div>
+                  <div className="col-md-3"><label className="form-label" htmlFor="waitlist-phone">Phone</label><input id="waitlist-phone" className="form-control" required type="tel" pattern="[+]?[0-9 ()-]{7,20}" value={waitlistForm.phone} onChange={(event) => setWaitlistForm({ ...waitlistForm, phone: event.target.value })} /></div>
+                  <div className="col-md-3"><label className="form-label" htmlFor="waitlist-doctor">Doctor preference</label><select id="waitlist-doctor" className="form-select" value={waitlistForm.doctor_name} onChange={(event) => setWaitlistForm({ ...waitlistForm, doctor_name: event.target.value })}><option value="">Any doctor</option>{(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => <option key={doctor.id} value={doctor.name}>{doctor.name}</option>)}</select></div>
+                  <div className="col-md-3"><label className="form-label" htmlFor="waitlist-date">Preferred date (optional)</label><input id="waitlist-date" className="form-control" type="date" min={clinicToday} value={waitlistForm.preferred_date} onChange={(event) => setWaitlistForm({ ...waitlistForm, preferred_date: event.target.value })} /></div>
+                  <div className="col-md-3"><label className="form-label" htmlFor="waitlist-time">Preferred time (optional)</label><input id="waitlist-time" className="form-control" type="time" value={waitlistForm.preferred_time} onChange={(event) => setWaitlistForm({ ...waitlistForm, preferred_time: event.target.value })} /></div>
+                  <div className="col-md-6"><label className="form-label" htmlFor="waitlist-notes">Notes (optional)</label><input id="waitlist-notes" className="form-control" maxLength="500" value={waitlistForm.notes} onChange={(event) => setWaitlistForm({ ...waitlistForm, notes: event.target.value })} placeholder="Useful scheduling notes" /></div>
+                  <div className="col-md-3 d-flex align-items-end"><button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Add to waitlist'}</button></div>
+                </form>}
+                {reopenedSlots.length > 0 && <div className="mb-4"><h4 className="h6">Patients matching reopened slots</h4><div className="agenda-list">{reopenedSlots.map(({ booking, matches }) => <div className="agenda-row align-items-start" key={`slot-${booking.id}`}><div className="agenda-date"><strong>{booking.appointment_time}</strong><small>{booking.appointment_date}</small></div><div className="agenda-details"><strong>{booking.doctor_name}</strong><span>Cancelled appointment · {matches.length} matching {matches.length === 1 ? 'patient' : 'patients'}</span><div className="d-flex flex-wrap gap-2 mt-2">{matches.map((entry) => <span className="badge bg-light text-dark border" key={entry.id}>{entry.name} · <a href={`tel:${entry.phone}`}>{entry.phone}</a> {canManage('appointments') && <button type="button" className="btn btn-link btn-sm p-0 ms-1" onClick={() => updateWaitlistEntryStatus(entry.id, 'contacted')}>Mark contacted</button>}</span>)}</div></div><span className="status-pill cancelled">Slot reopened</span></div>)}</div></div>}
+                <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Patient</th><th>Preferences</th><th>Notes</th><th>Status</th>{canManage('appointments') && <th>Update</th>}</tr></thead><tbody>{clinicWaitlist.length ? clinicWaitlist.map((entry) => <tr key={entry.id}><td className="fw-semibold">{entry.name}<small className="d-block text-muted"><a href={`tel:${entry.phone}`}>{entry.phone}</a></small></td><td>{entry.doctor_name || 'Any doctor'}<small className="d-block text-muted">{entry.preferred_date || 'Any date'}{entry.preferred_time ? ` · ${entry.preferred_time}` : ''}</small></td><td>{entry.notes || '—'}</td><td><span className={`status-pill ${entry.status === 'waiting' ? 'confirmed' : entry.status === 'closed' ? 'cancelled' : entry.status}`}>{entry.status}</span></td>{canManage('appointments') && <td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${entry.name} waitlist status`} value={entry.status} onChange={(event) => updateWaitlistEntryStatus(entry.id, event.target.value)}><option value="waiting">Waiting</option><option value="contacted">Contacted</option><option value="booked">Booked</option><option value="closed">Closed</option></select></td>}</tr>) : <tr><td colSpan={canManage('appointments') ? 5 : 4} className="text-muted py-4">No patients on the cancellation waitlist.</td></tr>}</tbody></table></div>
+                </div>
+              </section>}
+
+              {!superAdmin && activeView === 'payments' && <section className="tenant-insight-panel mb-4">
+                <div className="admin-panel-heading"><div><h3>Payments &amp; transactions</h3><p>Staff-recorded billing and payment method; this ledger does not process charges. Outstanding balances remain visible here.</p></div><span className="status-pill confirmed">{transactions.length} visit{transactions.length === 1 ? '' : 's'}</span></div>
+                <div className="row g-3 mb-4">
+                  {[['Total billed', transactionTotals.billed], ['Received', transactionTotals.received], ['Balance due', transactionTotals.due]].map(([label, value]) => <div className="col-12 col-md-4" key={label}><div className="patient-profile-metric"><small>{label}</small><strong>{formatINR(value)}</strong></div></div>)}
+                </div>
+                <div className="workspace-table-tools transaction-table-tools">
+                  <div className="workspace-search"><label className="visually-hidden" htmlFor="transaction-search">Search transactions</label><span aria-hidden="true">⌕</span><input id="transaction-search" className="form-control" placeholder="Search transaction, patient, appointment, reference" value={transactionQuery} onChange={(event) => setTransactionQuery(event.target.value)} /></div>
+                  <div className="workspace-filter-pills" role="group" aria-label="Transaction visit date range">{[['today', 'Today'], ['month', 'This month'], ['all', 'All dates']].map(([value, label]) => <button type="button" key={value} className={transactionDateFilter === value ? 'active' : ''} aria-pressed={transactionDateFilter === value} onClick={() => setTransactionDateFilter(value)}>{label}</button>)}</div>
+                  <label className="visually-hidden" htmlFor="transaction-status-filter">Filter by payment status</label><select id="transaction-status-filter" className="form-select workspace-status-filter" value={transactionStatusFilter} onChange={(event) => setTransactionStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="paid">Paid</option><option value="partial">Partial</option><option value="unpaid">Unpaid</option></select>
+                  <label className="visually-hidden" htmlFor="transaction-method-filter">Filter by payment method</label><select id="transaction-method-filter" className="form-select workspace-status-filter" value={transactionMethodFilter} onChange={(event) => setTransactionMethodFilter(event.target.value)}><option value="all">All methods</option><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank_transfer">Bank transfer</option><option value="other">Other</option><option value="unpaid">Unpaid</option></select>
+                  <details className="patient-column-picker"><summary className="btn btn-sm btn-outline-secondary patient-icon-trigger" aria-label="Choose transaction columns" title="Choose columns"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="5" height="14" rx="1"/><rect x="10" y="5" width="4" height="14" rx="1"/><rect x="15" y="5" width="5" height="14" rx="1"/></svg></summary><div className="patient-column-picker-menu transaction-column-menu" role="group" aria-label="Choose transaction columns">{TRANSACTION_TABLE_COLUMNS.map((column) => <label key={column.key}><input type="checkbox" checked={transactionColumns.includes(column.key)} disabled={transactionColumns.length === 1 && transactionColumns.includes(column.key)} onChange={() => setTransactionColumns((current) => current.includes(column.key) ? current.filter((key) => key !== column.key) : [...current, column.key])} /> {column.label}</label>)}</div></details>
+                  <button type="button" className="btn btn-outline-secondary" onClick={() => exportTransactionsCsv(selectedTransactionRows.length ? selectedTransactionRows : filteredTransactions)}>Export</button>
+                  <button type="button" className={`btn btn-sm btn-outline-secondary patient-icon-trigger ${selectedTransactionRows.length ? 'has-active-selection' : ''}`} aria-label="Clear transaction selection" title="Clear selection" disabled={!selectedTransactionRows.length} onClick={() => setSelectedTransactionIds([])}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 17 17M17 7 7 17"/><circle cx="12" cy="12" r="9"/></svg></button>
+                  {(transactionQuery || transactionStatusFilter !== 'all' || transactionMethodFilter !== 'all' || transactionDateFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setTransactionQuery(''); setTransactionStatusFilter('all'); setTransactionMethodFilter('all'); setTransactionDateFilter('all'); }}>Clear filters</button>}
+                  <span className="workspace-result-count">{filteredTransactions.length} of {transactions.length} transactions</span>
+                </div>
+                {selectedTransactionRows.length > 0 && <div className="recent-patient-bulk-actions appointment-bulk-actions" aria-live="polite"><span>{selectedTransactionRows.length} selected</span></div>}
+                <div className="table-responsive"><table className="table align-middle mb-0 transaction-register-table"><thead><tr><th><input className="form-check-input" type="checkbox" aria-label="Select all transactions on this page" checked={allTransactionPageSelected} onChange={toggleTransactionPageSelection} /></th>{TRANSACTION_TABLE_COLUMNS.filter((column) => transactionColumns.includes(column.key)).map((column) => <th key={column.key}>{column.label}</th>)}<th>Actions</th></tr></thead><tbody>
+                  {transactionPagination.items.length ? transactionPagination.items.map((transaction) => <tr key={transaction.transaction_id || transaction.appointment_id} className={selectedTransactionIds.includes(String(transaction.appointment_id)) ? 'recent-patient-selected' : ''}><td><input className="form-check-input" type="checkbox" aria-label={`Select transaction ${transaction.transaction_id || transaction.appointment_id}`} checked={selectedTransactionIds.includes(String(transaction.appointment_id))} onChange={() => toggleTransactionSelection(transaction.appointment_id)} /></td>{TRANSACTION_TABLE_COLUMNS.filter((column) => transactionColumns.includes(column.key)).map((column) => <td key={column.key} className={['transaction_id', 'appointment_id'].includes(column.key) ? 'font-monospace small' : ''}>{transactionCell(transaction, column.key)}</td>)}<td className="text-nowrap"><button type="button" className="btn btn-sm btn-outline-secondary me-2" onClick={() => setViewingTransaction(transaction)}>View</button>{canManage('payments') && <><button type="button" className="btn btn-sm btn-outline-primary me-2" onClick={() => editTransactionBilling(transaction)}>Edit</button>{session?.role === 'tenant_admin' && <button type="button" className="btn btn-sm btn-outline-danger" disabled={busy} onClick={() => deleteTransaction(transaction)}>Delete</button>}</>}</td></tr>) : <tr><td colSpan={TRANSACTION_TABLE_COLUMNS.filter((column) => transactionColumns.includes(column.key)).length + 2} className="text-muted py-4">{transactions.length ? 'No transactions match those filters.' : 'No completed visits have billing details yet.'}</td></tr>}
+                </tbody></table></div>
+                <ListPagination pagination={transactionPagination} label="transactions" />
+              </section>}
+
+              {viewingTransaction && activeView === 'payments' && <div className="workspace-profile-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setViewingTransaction(null); }} onKeyDown={(event) => { if (event.key === 'Escape') setViewingTransaction(null); }}>
+                <section className="workspace-profile-dialog transaction-view-dialog" role="dialog" aria-modal="true" aria-labelledby="transaction-view-title">
+                  <div className="workspace-profile-heading"><div><p className="workspace-confirm-eyebrow">READ ONLY · PAYMENT AUDIT</p><h2 id="transaction-view-title">Transaction details</h2><p>{viewingTransaction.transaction_id || 'Unpaid visit'} · {viewingTransaction.patient_name} · Appointment {viewingTransaction.appointment_id}</p></div><button type="button" className="workspace-profile-close" onClick={() => setViewingTransaction(null)} aria-label="Close transaction details">×</button></div>
+                  <div className="transaction-detail-grid">{TRANSACTION_TABLE_COLUMNS.map((column) => <div className="transaction-detail-item" key={column.key}><span>{column.label}</span><strong>{transactionCell(viewingTransaction, column.key)}</strong></div>)}</div>
+                  <section className="transaction-proof-section" aria-label="Payment document">
+                    <div><h3>Payment document</h3><p>{viewingTransaction.payment_proof_name || (viewingTransaction.payment_proof_data_url ? 'Payment screenshot' : 'No payment proof attached.')}</p></div>
+                    {viewingTransaction.payment_proof_data_url && <div className="transaction-proof-actions"><a className="btn btn-sm btn-outline-primary" href={viewingTransaction.payment_proof_data_url} target="_blank" rel="noreferrer">Open document</a><a className="btn btn-sm btn-outline-secondary" href={viewingTransaction.payment_proof_data_url} download={viewingTransaction.payment_proof_name || 'payment-proof.jpg'}>Download</a><a className="transaction-proof-preview" href={viewingTransaction.payment_proof_data_url} target="_blank" rel="noreferrer"><img src={viewingTransaction.payment_proof_data_url} alt={viewingTransaction.payment_proof_name || 'Payment proof screenshot'} /></a></div>}
+                  </section>
+                  {!viewingTransaction.recorded_by && <p className="small text-muted mt-3 mb-0">“Recorded by” is not available for entries saved before payment audit tracking was added.</p>}
+                </section>
+              </div>}
+
+              {!superAdmin && activeView === 'fees' && <section className="tenant-insight-panel fee-reconciliation-panel mb-4">
+                <div className="admin-panel-heading"><div><h3>Ledger reconciliation</h3><p>Compare completed visit billing with the clinic’s daily or monthly ledger. Matching records only marks them as checked; it never changes or deletes billing.</p></div><div className="fee-period-switch" role="group" aria-label="Ledger period"><button type="button" className={feePeriod === 'today' ? 'active' : ''} aria-pressed={feePeriod === 'today'} onClick={() => setFeePeriod('today')}>Today</button><button type="button" className={feePeriod === 'month' ? 'active' : ''} aria-pressed={feePeriod === 'month'} onClick={() => setFeePeriod('month')}>This month</button></div></div>
+                <div className="row g-3 mb-4">{[['Visits', feeTransactions.length], ['Billed', formatINR(feeTotals.billed)], ['Received', formatINR(feeTotals.received)], ['Matched', formatINR(feeTotals.matched)], ['Unmatched', formatINR(feeTotals.received - feeTotals.matched)]].map(([label, value]) => <div className="col-6 col-xl" key={label}><div className="patient-profile-metric fee-reconciliation-metric"><small>{label}</small><strong>{value}</strong></div></div>)}</div>
+                <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Visit</th><th>Patient / appointment</th><th>Doctor</th><th>Bill</th><th>Received</th><th>Due</th><th>Ledger match</th><th>Action</th></tr></thead><tbody>{feeTransactions.length ? feeTransactions.map((transaction) => <tr key={transaction.appointment_id}><td>{transaction.appointment_date}<small className="d-block text-muted">{transaction.appointment_time}</small></td><td><strong>{transaction.patient_name}</strong><small className="d-block text-muted">{transaction.appointment_id}</small></td><td>{transaction.doctor_name}</td><td>{formatINR(transaction.total_amount)}</td><td>{formatINR(transaction.amount_paid)}</td><td className={Number(transaction.balance_due) ? 'text-danger fw-semibold' : ''}>{formatINR(transaction.balance_due)}</td><td>{transaction.reconciled_at ? <><span className="status-pill completed">Matched</span><small className="d-block text-muted">{transaction.reconciled_by || 'Clinic staff'}</small></> : <span className="status-pill confirmed">Needs match</span>}</td><td className="text-nowrap">{!transaction.reconciled_at && canReconcilePayments && <button type="button" className="btn btn-sm btn-success me-2" disabled={busy} onClick={() => reconcilePayment(transaction)}>Match ledger</button>}{!canManage('payments') && canReconcilePayments && <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => openBillingChangeRequest(transaction)}>Request correction</button>}</td></tr>) : <tr><td colSpan="8" className="text-muted py-4">No completed visit billing for {feePeriod === 'today' ? 'today' : 'this month'}.</td></tr>}</tbody></table></div>
+                {session?.role === 'tenant_admin' && <div className="fee-approval-queue mt-4"><div className="admin-panel-heading"><div><h4>Billing change requests</h4><p>Review staff requests before any saved billing is changed.</p></div><span className="status-pill confirmed">{paymentChangeRequests.filter((item) => item.status === 'pending').length} pending</span></div>{paymentChangeRequests.filter((item) => item.status === 'pending').length ? <div className="list-group list-group-flush">{paymentChangeRequests.filter((item) => item.status === 'pending').map((item) => <article className="fee-approval-request list-group-item px-0" key={item.id}><div className="d-flex justify-content-between align-items-start gap-3 flex-wrap"><div><strong>{item.appointment_id} · {item.proposed_billing.payment_reference || 'Billing correction'}</strong><p className="small text-muted mb-2">Requested by {item.requester} · {new Date(item.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p><p className="small mb-2">{item.message}</p><span className="small">Proposed bill {formatINR(Math.max(0, Number(item.proposed_billing.consultation_fee) - Number(item.proposed_billing.discount_amount) + Number(item.proposed_billing.additional_charges)))} · Received {formatINR(item.proposed_billing.amount_paid)} · {String(item.proposed_billing.payment_method || 'unpaid').replace('_', ' ')}</span>{item.proposed_billing.payment_proof_data_url && <a className="approval-proof-link" href={item.proposed_billing.payment_proof_data_url} target="_blank" rel="noreferrer">Open attached payment proof · {item.proposed_billing.payment_proof_name || 'Screenshot'}</a>}</div><div className="d-flex gap-2"><button type="button" className="btn btn-sm btn-success" disabled={busy} onClick={() => reviewPaymentChangeRequest(item, 'approved')}>Approve &amp; apply</button><button type="button" className="btn btn-sm btn-outline-danger" disabled={busy} onClick={() => reviewPaymentChangeRequest(item, 'rejected')}>Reject</button></div></div></article>)}</div> : <div className="empty-insight">No billing changes are waiting for approval.</div>}</div>}
+              </section>}
+
+              {!superAdmin && (activeView === 'patients' || activeView === 'appointments') && <div className="card border-0 shadow-sm rounded-4">
                 <div className="card-body">
                   {activeView === 'appointments' ? <button type="button" className={`workspace-section-toggle mb-3 ${appointmentRegisterOpen ? 'is-open' : ''}`} aria-expanded={appointmentRegisterOpen} aria-controls="appointment-register-fields" onClick={() => setAppointmentRegisterOpen((open) => !open)}>
                     <span className="workspace-section-toggle-copy"><span className="workspace-section-toggle-title">Appointment register</span><span className="workspace-section-toggle-description">Showing {filteredBookings.length} of {bookings.length} records. Status changes stay saved on the appointment.</span></span>
@@ -2200,8 +2900,11 @@ function App() {
                     <div className="workspace-search"><label className="visually-hidden" htmlFor="appointment-search">Search appointments</label><span aria-hidden="true">⌕</span><input id="appointment-search" className="form-control" placeholder="Search patient, doctor, phone, or reference" value={appointmentQuery} onChange={(event) => setAppointmentQuery(event.target.value)} /></div>
                     <div className="workspace-filter-pills" role="group" aria-label="Appointment date range">{[['today', 'Today'], ['upcoming', 'Upcoming'], ['all', 'All dates']].map(([value, label]) => <button type="button" key={value} className={appointmentDateFilter === value ? 'active' : ''} aria-pressed={appointmentDateFilter === value} onClick={() => setAppointmentDateFilter(value)}>{label}</button>)}</div>
                     <label className="visually-hidden" htmlFor="appointment-status-filter">Filter by status</label><select id="appointment-status-filter" className="form-select workspace-status-filter" value={appointmentStatusFilter} onChange={(event) => setAppointmentStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select>
-                    <button className="btn btn-outline-secondary" onClick={() => exportTenantCsv('bookings')}>Export</button>
+                    <button className="btn btn-outline-secondary" onClick={() => exportTenantCsv('bookings', selectedAppointmentRows.length ? selectedAppointmentRows : bookings)}>Export</button>
+                    <button type="button" className={`btn btn-sm btn-outline-secondary patient-icon-trigger ${selectedAppointmentRows.length ? 'has-active-selection' : ''}`} aria-label="Clear appointment selection" title="Clear selection" disabled={!selectedAppointmentRows.length} onClick={() => setSelectedAppointmentIds([])}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 17 17M17 7 7 17"/><circle cx="12" cy="12" r="9"/></svg></button>
                   </div>}
+                  {activeView === 'appointments' && selectedAppointmentRows.length > 0 && <div className="recent-patient-bulk-actions appointment-bulk-actions" aria-live="polite"><span>{selectedAppointmentRows.length} selected</span></div>}
+                  {activeView === 'appointments' && <p className="small text-muted mb-3">Select <strong>All dates</strong> to include past bookings. For a month-wise summary and CSV, open Reports → Monthly booking report.</p>}
                   {(activeView === 'patients' || activeView === 'overview') && <div className="workspace-table-tools">
                     <div className="workspace-search"><label className="visually-hidden" htmlFor="patient-search">Search patients</label><span aria-hidden="true">⌕</span><input id="patient-search" className="form-control" placeholder={activeView === 'overview' ? `Search ${PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => column.label.toLowerCase()).join(', ')}` : 'Search name, phone, email, or patient ID'} value={patientQuery} onChange={(event) => setPatientQuery(event.target.value)} /></div>
                     {activeView === 'overview' && <div className="workspace-filter-pills" role="group" aria-label="Recent patient appointment date range">{[['today', 'Today'], ['upcoming', 'Upcoming'], ['all', 'All patients']].map(([value, label]) => <button type="button" key={value} className={patientDateFilter === value ? 'active' : ''} aria-pressed={patientDateFilter === value} onClick={() => setPatientDateFilter(value)}>{label}</button>)}</div>}
@@ -2217,28 +2920,49 @@ function App() {
                       {(patientQuery || patientStatusFilter !== 'all' || patientDateFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setPatientQuery(''); setPatientStatusFilter('all'); setPatientDateFilter('all'); }}>Clear filters</button>}
                     </>}
                   </div>}
+                  {activeView === 'patients' && selectedPatient && <section className="patient-profile-panel mb-4" aria-labelledby="patient-profile-heading">
+                    <div className="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+                      <div><span className="workspace-result-count">PATIENT PROFILE · {selectedPatient.id}</span><h3 className="h4 mb-1 mt-1" id="patient-profile-heading">{selectedPatient.name}</h3><span className={`status-pill ${selectedPatient.status === 'active' ? 'confirmed' : 'cancelled'}`}>{selectedPatient.status || 'active'}</span></div>
+                      <div className="d-flex gap-2 flex-wrap">
+                        {selectedPatient.phone && <a className="btn btn-sm btn-outline-primary" href={`tel:${selectedPatient.phone}`}>Call patient</a>}
+                        {selectedPatient.email && <a className="btn btn-sm btn-outline-primary" href={`mailto:${selectedPatient.email}`}>Email</a>}
+                        {canManage('appointments') && <button type="button" className="btn btn-sm btn-primary" onClick={() => openAppointmentForPatient(selectedPatient)}>Book appointment</button>}
+                        {canManage('patients') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => editPatient(selectedPatient)}>Edit details</button>}
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setSelectedPatientId('')}>Close</button>
+                      </div>
+                    </div>
+                    <div className="patient-profile-contact mb-3"><span><strong>Phone</strong>{selectedPatient.phone || 'Not added'}</span><span><strong>Email</strong>{selectedPatient.email || 'Not added'}</span><span><strong>Age</strong>{selectedPatient.age ? `${selectedPatient.age} years` : 'Not added'}</span><span><strong>Registered</strong>{formatPatientDate(selectedPatient.created_at?.slice(0, 10))}</span></div>
+                    <div className="row g-3 mb-3">
+                      <div className="col-6 col-lg-3"><div className="patient-profile-metric"><small>Appointments</small><strong>{selectedPatientBookings.length}</strong></div></div>
+                      <div className="col-6 col-lg-3"><div className="patient-profile-metric"><small>Completed</small><strong>{selectedPatientBookings.filter((booking) => booking.status === 'completed').length}</strong></div></div>
+                      <div className="col-12 col-lg-6"><div className="patient-profile-metric"><small>Next visit</small><strong>{selectedPatientUpcoming ? `${formatPatientDate(selectedPatientUpcoming.appointment_date)} · ${selectedPatientUpcoming.appointment_time}` : 'No upcoming visit'}</strong>{selectedPatientUpcoming && <small>{selectedPatientUpcoming.doctor_name}</small>}</div></div>
+                    </div>
+                    {selectedPatient.notes && <div className="patient-profile-notes mb-3"><strong>Patient notes</strong><p className="mb-0 mt-1">{selectedPatient.notes}</p></div>}
+                    <div className="d-flex justify-content-between align-items-center mb-2"><h4 className="h6 mb-0">Appointment history</h4><span className="small text-muted">Most recent first</span></div>
+                    {selectedPatientBookings.length ? <div className="patient-profile-history">{selectedPatientBookings.slice(0, 8).map((booking) => <div className="patient-profile-history-row" key={booking.id}><div><strong>{formatPatientDate(booking.appointment_date)} · {booking.appointment_time}</strong><span>{booking.doctor_name || 'Doctor not recorded'}{booking.reason ? ` · ${booking.reason}` : ''}</span></div><span className={`status-pill ${booking.status || 'confirmed'}`}>{String(booking.status || 'confirmed').replace('_', ' ')}</span></div>)}</div> : <p className="small text-muted mb-0">No appointment history available for this patient.</p>}
+                  </section>}
                   <div className="table-responsive">
-                    <table className="table align-middle">
-                      {activeView === 'appointments' ? <thead><tr><th>Appointment</th><th>Patient</th><th>Doctor</th><th>Date &amp; time</th><th>Status</th>{canManage('appointments') && <th>Update</th>}</tr></thead> : <thead>
+                    <table className={`table align-middle ${activeView === 'appointments' ? 'appointment-register-table' : ''}`}>
+                        {activeView === 'appointments' ? <thead><tr><th><input className="form-check-input" type="checkbox" aria-label="Select all appointments on this page" checked={allAppointmentPageSelected} onChange={toggleAppointmentPageSelection} /></th><th>Appointment</th><th>Patient</th><th>Doctor</th><th>Date &amp; time</th><th>Status</th><th>Update</th><th>Actions</th></tr></thead> : <thead>
                         <tr>
                           {(activeView === 'overview' ? PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)) : PATIENT_TABLE_COLUMNS.filter((column) => ['id', 'name', 'phone', 'email', 'status'].includes(column.key))).map((column) => <th key={column.key}>{column.label}</th>)}
-                          {activeView === 'patients' && canManage('patients') && <th className="text-end">Actions</th>}
+                          {activeView === 'patients' && <th className="text-end">Actions</th>}
                         </tr>
                       </thead>}
                       <tbody>
                         {activeView === 'appointments' ? filteredBookings.length === 0 ? (
-                          <tr><td colSpan={canManage('appointments') ? 6 : 5} className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
+                          <tr><td colSpan="8" className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
                         ) : appointmentPagination.items.map((booking) => (
-                          <tr key={booking.id}><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td>{canManage('appointments') && <td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></td>}</tr>
+                          <tr key={booking.id} className={selectedAppointmentIds.includes(String(booking.id)) ? 'recent-patient-selected' : ''}><td><input className="form-check-input" type="checkbox" aria-label={`Select appointment ${booking.id}`} checked={selectedAppointmentIds.includes(String(booking.id))} onChange={() => toggleAppointmentSelection(booking.id)} /></td><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td><td>{canManage('appointments') ? <select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed" disabled={!canManage('payments')}>Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select> : <span className="text-muted">—</span>}</td><td className="text-nowrap">{canManage('payments') ? <details className="billing-action-picker"><summary className="btn btn-sm billing-action-trigger">Billing actions <span aria-hidden="true">⌄</span></summary><div className="billing-action-menu">{booking.status === 'completed' ? <button type="button" className="billing-action-edit" onClick={() => updateAppointmentStatus(booking.id, 'completed')}><span aria-hidden="true">✎</span><span><strong>Edit billing</strong><small>Change a completed visit’s fee or payment</small></span></button> : <button type="button" className="billing-action-record" onClick={() => updateAppointmentStatus(booking.id, 'completed')}><span aria-hidden="true">₹</span><span><strong>Record payment</strong><small>Complete visit and save its billing</small></span></button>}</div></details> : <span className="text-muted">—</span>}</td></tr>
                         )) : (activeView === 'overview' ? patientPagination.items : filteredPatients).length === 0 ? (
                           <tr>
-                            <td colSpan={(activeView === 'overview' ? patientOverviewColumns.length : 5) + (activeView === 'patients' && canManage('patients') ? 1 : 0)} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
+                            <td colSpan={(activeView === 'overview' ? patientOverviewColumns.length : 5) + (activeView === 'patients' ? 1 : 0)} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
                           </tr>
                         ) : (
                           (activeView === 'overview' || activeView === 'patients' ? patientPagination.items : displayedPatients).map((patient) => (
                             <tr key={patient.id}>
                               {(activeView === 'overview' ? PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)) : PATIENT_TABLE_COLUMNS.filter((column) => ['id', 'name', 'phone', 'email', 'status'].includes(column.key))).map((column) => <td key={column.key}>{column.key === 'status' ? <span className="badge bg-success-subtle text-success rounded-pill">{patient.status}</span> : column.value(patient) || '-'}</td>)}
-                              {activeView === 'patients' && canManage('patients') && <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editPatient(patient)}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={() => deletePatient(patient.id)}>Delete</button></td>}
+                              {activeView === 'patients' && <td className="text-end text-nowrap"><button className={`btn btn-sm ${String(selectedPatientId) === String(patient.id) ? 'btn-primary' : 'btn-outline-primary'} me-2`} onClick={() => setSelectedPatientId((current) => String(current) === String(patient.id) ? '' : patient.id)}>{String(selectedPatientId) === String(patient.id) ? 'Viewing' : 'View profile'}</button>{canManage('patients') && <><button className="btn btn-sm btn-outline-secondary me-2" onClick={() => editPatient(patient)}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={() => deletePatient(patient.id)}>Delete</button></>}</td>}
                             </tr>
                           ))
                         )}
@@ -2253,6 +2977,32 @@ function App() {
               </div>
             </main>
           </div>
+          {completionDialogOpen && completionAppointment && <div className="workspace-profile-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) { setCompletionDialogOpen(false); setCompletionAppointment(null); setBillingRequestFor(null); } }}>
+            <section className="workspace-profile-dialog appointment-completion-dialog" role="dialog" aria-modal="true" aria-labelledby="appointment-completion-title">
+              <div className="workspace-profile-heading"><div><p className="workspace-confirm-eyebrow">{billingRequestFor ? 'ADMIN APPROVAL REQUIRED' : 'VISIT CHECKOUT'}</p><h2 id="appointment-completion-title">{billingRequestFor ? 'Request billing correction' : completionAppointment.status === 'completed' ? 'Update visit & billing' : 'Complete appointment'}</h2><p>{completionAppointment.patient_name} · {completionAppointment.doctor_name} · {completionAppointment.appointment_date} at {completionAppointment.appointment_time}{billingRequestFor ? ' · Changes apply only after admin approval.' : ''}</p></div><button type="button" className="workspace-profile-close" onClick={() => { setCompletionDialogOpen(false); setCompletionAppointment(null); setBillingRequestFor(null); }} disabled={busy} aria-label="Close completion form">×</button></div>
+              <form className="workspace-profile-form" onSubmit={submitAppointmentCompletion}>
+                <div className="workspace-profile-fields">
+                  <label>Consultation fee (₹)<input className="form-control" type="number" min="0" max="10000000" step="0.01" required value={completionForm.consultation_fee} onChange={(event) => setCompletionForm((current) => ({ ...current, consultation_fee: event.target.value }))} /></label>
+                  <label>Discount (₹)<input className="form-control" type="number" min="0" max="10000000" step="0.01" value={completionForm.discount_amount} onChange={(event) => setCompletionForm((current) => ({ ...current, discount_amount: event.target.value }))} /></label>
+                  <label>Additional charges (₹)<input className="form-control" type="number" min="0" max="10000000" step="0.01" value={completionForm.additional_charges} onChange={(event) => setCompletionForm((current) => ({ ...current, additional_charges: event.target.value }))} /></label>
+                  <label>Amount received (₹)<input className="form-control" type="number" min="0" max="10000000" step="0.01" value={completionForm.amount_paid} onChange={(event) => setCompletionForm((current) => ({ ...current, amount_paid: event.target.value }))} placeholder="0 for unpaid" /></label>
+                  <label>Payment method<select className="form-select" value={completionForm.payment_method} onChange={(event) => setCompletionForm((current) => ({ ...current, payment_method: event.target.value }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank_transfer">Bank transfer</option><option value="other">Other</option><option value="unpaid">Unpaid</option></select></label>
+                  <label>Payment reference<input className="form-control" maxLength="120" value={completionForm.payment_reference} onChange={(event) => setCompletionForm((current) => ({ ...current, payment_reference: event.target.value }))} placeholder="Optional receipt or UPI reference" /></label>
+                  <div className="payment-proof-field">
+                    <strong>{completionForm.payment_method === 'upi' ? 'UPI payment screenshot' : 'Payment proof (optional)'}</strong>
+                    <small>PNG, JPG, or WebP · compressed before saving</small>
+                    <div className="payment-proof-controls"><label className="workspace-profile-upload">{completionForm.payment_proof_data_url ? 'Replace image' : 'Upload image'}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={handlePaymentProofChange} disabled={busy} /></label>{completionForm.payment_proof_data_url && <button type="button" className="workspace-profile-remove" onClick={() => setCompletionForm((current) => ({ ...current, payment_proof_data_url: '', payment_proof_name: '' }))} disabled={busy}>Remove</button>}{completionForm.payment_proof_name && <span>{completionForm.payment_proof_name}</span>}</div>
+                    {completionForm.payment_proof_data_url && <a className="payment-proof-thumb" href={completionForm.payment_proof_data_url} target="_blank" rel="noreferrer"><img src={completionForm.payment_proof_data_url} alt="Payment proof preview" /></a>}
+                  </div>
+                  <label className="completion-notes-field">Visit / checkout notes<textarea className="form-control" rows="2" maxLength="1000" value={completionForm.completion_notes} onChange={(event) => setCompletionForm((current) => ({ ...current, completion_notes: event.target.value }))} placeholder="Optional operational notes" /></label>
+                </div>
+                {billingRequestFor && <label className="w-100 mt-3">Reason for correction<textarea className="form-control" rows="2" maxLength="1000" value={billingRequestMessage} onChange={(event) => setBillingRequestMessage(event.target.value)} placeholder="Tell the admin what needs to be corrected" /></label>}
+                <div className="completion-total-bar"><span>Final bill</span><strong>{formatINR(Math.max(0, Number(completionForm.consultation_fee || 0) - Number(completionForm.discount_amount || 0) + Number(completionForm.additional_charges || 0)))}</strong><span>Balance after payment</span><strong>{formatINR(Math.max(0, Number(completionForm.consultation_fee || 0) - Number(completionForm.discount_amount || 0) + Number(completionForm.additional_charges || 0) - Number(completionForm.amount_paid || 0)))}</strong></div>
+                {error && <p className="alert alert-danger py-2 mb-0" role="alert">{error}</p>}
+                <div className="workspace-profile-actions"><button type="button" className="workspace-confirm-cancel" onClick={() => { setCompletionDialogOpen(false); setCompletionAppointment(null); setBillingRequestFor(null); }} disabled={busy}>Cancel</button><button type="submit" className="workspace-confirm-accept" disabled={busy}>{busy ? 'Saving…' : billingRequestFor ? 'Send for admin approval' : completionAppointment.status === 'completed' ? 'Save billing updates' : 'Save payment & complete'}</button></div>
+              </form>
+            </section>
+          </div>}
           {profileDialogOpen && <div className="workspace-profile-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileBusy && !profileLoading) setProfileDialogOpen(false); }} onKeyDown={(event) => { if (event.key === 'Escape' && !profileBusy && !profileLoading) setProfileDialogOpen(false); }}>
             <section className="workspace-profile-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-profile-title">
               <div className="workspace-profile-heading">
