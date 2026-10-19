@@ -2219,7 +2219,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     Object.assign(patient, {
       name: payload.name || patient.name,
       phone: payload.phone || patient.phone,
-      email: payload.email ?? patient.email,
+      email: payload.email === '' ? '' : payload.email ?? patient.email,
       age: payload.age ?? patient.age,
       status: payload.status || patient.status,
       notes: payload.notes ?? patient.notes,

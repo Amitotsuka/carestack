@@ -1,6 +1,6 @@
 import { BadGatewayException, BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Put, Query, Req, ServiceUnavailableException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { ArrayMaxSize, IsArray, IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsByteLength, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { AppService } from './app.service';
@@ -174,7 +174,7 @@ class PatientDto {
   name: string;
   @IsString() @MinLength(7)
   phone: string;
-  @IsOptional() @IsEmail()
+  @IsOptional() @ValidateIf((_object, value) => value !== '') @IsEmail()
   email?: string;
   @IsOptional() @IsInt() @Min(0) @Max(125)
   age?: number;

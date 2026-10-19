@@ -40,6 +40,14 @@ const availableClinicViews = (user) => {
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+const PATIENT_TABLE_COLUMNS = [
+  { key: 'id', label: 'ID', value: (patient) => patient.id },
+  { key: 'name', label: 'Name', value: (patient) => patient.name },
+  { key: 'phone', label: 'Phone', value: (patient) => patient.phone },
+  { key: 'email', label: 'Email', value: (patient) => patient.email },
+  { key: 'age', label: 'Age', value: (patient) => patient.age },
+  { key: 'status', label: 'Status', value: (patient) => patient.status },
+];
 
 function useListPagination(items, resetKey = '') {
   const [page, setPage] = useState(1);
@@ -254,6 +262,15 @@ function App() {
   const [overviewActivityRange, setOverviewActivityRange] = useState('7d');
   const [patientQuery, setPatientQuery] = useState('');
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
+  const [patientOverviewColumns, setPatientOverviewColumns] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('carestack-patient-overview-columns') || 'null');
+      const validSaved = Array.isArray(saved) ? saved.filter((key) => PATIENT_TABLE_COLUMNS.some((column) => column.key === key)) : [];
+      return validSaved.length ? validSaved : ['id', 'name', 'phone', 'email', 'status'];
+    } catch {
+      return ['id', 'name', 'phone', 'email', 'status'];
+    }
+  });
   const [confirmationDialog, setConfirmationDialog] = useState(null);
   const confirmationResolverRef = useRef(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -296,6 +313,14 @@ function App() {
   const [clinicInterestForm, setClinicInterestForm] = useState(emptyClinicInterest);
   const [clinicInterestMessage, setClinicInterestMessage] = useState('');
   const [clinicInterestError, setClinicInterestError] = useState('');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('carestack-patient-overview-columns', JSON.stringify(patientOverviewColumns));
+    } catch {
+      // Keep the current selection for this session if browser storage is unavailable.
+    }
+  }, [patientOverviewColumns]);
 
   useEffect(() => {
     const handleExpiredSession = () => {
@@ -1057,7 +1082,14 @@ function App() {
       const patientPath = `/api/tenant/${session.tenant_id}/patients${editingPatientId ? `/${editingPatientId}` : ''}`;
       await request(patientPath, {
         method,
-        body: JSON.stringify({ ...patientForm, age: patientForm.age ? Number(patientForm.age) : null }),
+        body: JSON.stringify({
+          name: patientForm.name,
+          phone: patientForm.phone,
+          email: patientForm.email?.trim() || '',
+          age: patientForm.age ? Number(patientForm.age) : null,
+          status: patientForm.status,
+          notes: patientForm.notes || '',
+        }),
       });
       setNotice(editingPatientId ? 'Patient record updated.' : 'Patient added.');
       setPatientForm(emptyPatient);
@@ -1118,7 +1150,15 @@ function App() {
   };
 
   const editPatient = (patient) => {
-    setPatientForm({ ...emptyPatient, ...patient, age: patient.age || '' });
+    setPatientForm({
+      ...emptyPatient,
+      name: patient.name || '',
+      phone: patient.phone || '',
+      email: patient.email || '',
+      age: patient.age || '',
+      notes: patient.notes || '',
+      status: patient.status || 'active',
+    });
     setEditingPatientId(patient.id);
     setPatientFormOpen(true);
     setNotice('');
@@ -1422,11 +1462,14 @@ function App() {
   });
   const filteredPatients = patients.filter((patient) => {
     const query = patientQuery.trim().toLowerCase();
-    const matchesQuery = !query || [patient.id, patient.name, patient.phone, patient.email]
+    const searchableValues = activeView === 'overview'
+      ? PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => column.value(patient))
+      : [patient.id, patient.name, patient.phone, patient.email, patient.age, patient.status];
+    const matchesQuery = !query || searchableValues
       .some((value) => String(value || '').toLowerCase().includes(query));
     return matchesQuery && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
   });
-  const displayedPatients = activeView === 'patients' ? filteredPatients : patients.slice(0, 8);
+  const displayedPatients = [...filteredPatients].sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')));
   const clinicInterestPagination = useListPagination(clinicInterests, `leads:${activeView}`);
   const tenantPagination = useListPagination(tenants, `tenants:${activeView}`);
   const subscriptionTenantPagination = useListPagination(tenants, `subscriptions:${activeView}`);
@@ -1434,7 +1477,7 @@ function App() {
   const staffPagination = useListPagination(staff, `staff:${activeView}:${session?.tenant_id || ''}`);
   const doctorPagination = useListPagination(tenantData?.doctors || [], `doctors:${activeView}:${session?.tenant_id || ''}`);
   const appointmentPagination = useListPagination(filteredBookings, `appointments:${activeView}:${appointmentQuery}:${appointmentStatusFilter}:${appointmentDateFilter}`);
-  const patientPagination = useListPagination(filteredPatients, `patients:${activeView}:${patientQuery}:${patientStatusFilter}`);
+  const patientPagination = useListPagination(activeView === 'overview' ? displayedPatients : filteredPatients, `patients:${activeView}:${patientQuery}:${patientStatusFilter}:${patientOverviewColumns.join(',')}`);
   const doctorWorkloadPagination = useListPagination(analytics.doctor_workload, `doctor-workload:${activeView}`);
   const planBreakdownPagination = useListPagination(planBreakdown, `plan-breakdown:${activeView}`);
   const clinicDoctors = [...new Set([...(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.name), bookingForm.doctor_name].filter(Boolean))];
@@ -2119,20 +2162,25 @@ function App() {
                     <label className="visually-hidden" htmlFor="appointment-status-filter">Filter by status</label><select id="appointment-status-filter" className="form-select workspace-status-filter" value={appointmentStatusFilter} onChange={(event) => setAppointmentStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select>
                     <button className="btn btn-outline-secondary" onClick={() => exportTenantCsv('bookings')}>Export</button>
                   </div>}
-                  {activeView === 'patients' && <div className="workspace-table-tools">
-                    <div className="workspace-search"><label className="visually-hidden" htmlFor="patient-search">Search patients</label><span aria-hidden="true">⌕</span><input id="patient-search" className="form-control" placeholder="Search name, phone, email, or patient ID" value={patientQuery} onChange={(event) => setPatientQuery(event.target.value)} /></div>
+                  {(activeView === 'patients' || activeView === 'overview') && <div className="workspace-table-tools">
+                    <div className="workspace-search"><label className="visually-hidden" htmlFor="patient-search">Search patients</label><span aria-hidden="true">⌕</span><input id="patient-search" className="form-control" placeholder={activeView === 'overview' ? `Search ${PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => column.label.toLowerCase()).join(', ')}` : 'Search name, phone, email, or patient ID'} value={patientQuery} onChange={(event) => setPatientQuery(event.target.value)} /></div>
                     <label className="visually-hidden" htmlFor="patient-status-filter">Filter patients by status</label><select id="patient-status-filter" className="form-select workspace-status-filter" value={patientStatusFilter} onChange={(event) => setPatientStatusFilter(event.target.value)}><option value="all">All patients</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
                     <span className="workspace-result-count">{filteredPatients.length} of {patients.length} patients</span>
+                    {activeView === 'overview' && <>
+                      <details className="patient-column-picker">
+                        <summary className="btn btn-sm btn-outline-secondary">Choose columns</summary>
+                        <div className="patient-column-picker-menu" role="group" aria-label="Choose patient table columns">
+                          {PATIENT_TABLE_COLUMNS.map((column) => <label key={column.key}><input type="checkbox" checked={patientOverviewColumns.includes(column.key)} disabled={patientOverviewColumns.length === 1 && patientOverviewColumns.includes(column.key)} onChange={() => setPatientOverviewColumns((current) => current.includes(column.key) ? current.filter((key) => key !== column.key) : [...current, column.key])} /> {column.label}</label>)}
+                        </div>
+                      </details>
+                      {(patientQuery || patientStatusFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setPatientQuery(''); setPatientStatusFilter('all'); }}>Clear filters</button>}
+                    </>}
                   </div>}
                   <div className="table-responsive">
                     <table className="table align-middle">
                       {activeView === 'appointments' ? <thead><tr><th>Appointment</th><th>Patient</th><th>Doctor</th><th>Date &amp; time</th><th>Status</th>{canManage('appointments') && <th>Update</th>}</tr></thead> : <thead>
                         <tr>
-                          <th>ID</th>
-                          <th>Name</th>
-                          <th>Phone</th>
-                          <th>Email</th>
-                          <th>Status</th>
+                          {(activeView === 'overview' ? PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)) : PATIENT_TABLE_COLUMNS.filter((column) => ['id', 'name', 'phone', 'email', 'status'].includes(column.key))).map((column) => <th key={column.key}>{column.label}</th>)}
                           {activeView === 'patients' && canManage('patients') && <th className="text-end">Actions</th>}
                         </tr>
                       </thead>}
@@ -2141,20 +2189,14 @@ function App() {
                           <tr><td colSpan={canManage('appointments') ? 6 : 5} className="text-muted py-4">{bookings.length ? 'No appointments match those filters.' : 'No appointments booked yet.'}</td></tr>
                         ) : appointmentPagination.items.map((booking) => (
                           <tr key={booking.id}><td className="fw-semibold">{booking.id}</td><td>{booking.patient_name}<small className="d-block text-muted">{booking.phone_number}</small></td><td>{booking.doctor_name}</td><td>{booking.appointment_date}<small className="d-block text-muted">{booking.appointment_time}</small></td><td><span className={`status-pill ${booking.status}`}>{booking.status.replace('_', ' ')}</span></td>{canManage('appointments') && <td><select className="form-select form-select-sm appointment-status-select" aria-label={`Update ${booking.id} status`} value={booking.status} onChange={(event) => updateAppointmentStatus(booking.id, event.target.value)}><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No-show</option></select></td>}</tr>
-                        )) : displayedPatients.length === 0 ? (
+                        )) : (activeView === 'overview' ? patientPagination.items : filteredPatients).length === 0 ? (
                           <tr>
-                            <td colSpan={activeView === 'patients' && canManage('patients') ? 6 : 5} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
+                            <td colSpan={(activeView === 'overview' ? patientOverviewColumns.length : 5) + (activeView === 'patients' && canManage('patients') ? 1 : 0)} className="text-muted py-4">{patients.length ? 'No patients match those filters.' : 'No patients yet.'}</td>
                           </tr>
                         ) : (
-                          (activeView === 'patients' ? patientPagination.items : displayedPatients).map((patient) => (
+                          (activeView === 'overview' || activeView === 'patients' ? patientPagination.items : displayedPatients).map((patient) => (
                             <tr key={patient.id}>
-                              <td>{patient.id}</td>
-                              <td>{patient.name}</td>
-                              <td>{patient.phone}</td>
-                              <td>{patient.email || '-'}</td>
-                              <td>
-                                <span className="badge bg-success-subtle text-success rounded-pill">{patient.status}</span>
-                              </td>
+                              {(activeView === 'overview' ? PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)) : PATIENT_TABLE_COLUMNS.filter((column) => ['id', 'name', 'phone', 'email', 'status'].includes(column.key))).map((column) => <td key={column.key}>{column.key === 'status' ? <span className="badge bg-success-subtle text-success rounded-pill">{patient.status}</span> : column.value(patient) || '-'}</td>)}
                               {activeView === 'patients' && canManage('patients') && <td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => editPatient(patient)}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={() => deletePatient(patient.id)}>Delete</button></td>}
                             </tr>
                           ))
@@ -2163,7 +2205,7 @@ function App() {
                     </table>
                   </div>
                   {activeView === 'appointments' && <ListPagination pagination={appointmentPagination} label="appointments" />}
-                  {activeView === 'patients' && <ListPagination pagination={patientPagination} label="patients" />}
+                  {(activeView === 'patients' || activeView === 'overview') && <ListPagination pagination={patientPagination} label="patients" />}
                   </div>
                 </div>
               </div>}
