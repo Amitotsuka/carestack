@@ -124,6 +124,7 @@ const defaultTelephony = { provider: 'exotel' as const, voice_provider: 'sarvam'
 
 export class AppService implements OnModuleInit, OnModuleDestroy {
   private tenants: Record<string, Tenant> = {};
+  private faqAiDailyUsage = new Map<string, { date: string; count: number }>();
   private clinicInterests: ClinicInterest[] = [];
   private superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'superadmin@hospital.ai')).trim().toLowerCase();
   private superAdminPasswordHash = process.env.SUPER_ADMIN_PASSWORD
@@ -1163,6 +1164,64 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       return { reply: `The clinic is currently closed for AI booking. Our booking line is open from ${settings.open_time} to ${settings.close_time} (${settings.timezone}). Please call again during those hours.`, status: 'closed' };
     }
     return { reply: `I can help book an appointment at ${tenant.name}. Our booking line is open until ${settings.close_time} (${settings.timezone}). Please tell me the patient's name, preferred doctor, date, and time.`, status: 'ready_to_collect' };
+  }
+
+  async generateVoiceAgentFaqSuggestions(tenantId: string) {
+    const tenant = this.tenants[tenantId];
+    if (!tenant) return null;
+    const apiKey = (process.env.GROQ_API_KEY || '').trim();
+    if (!apiKey) return { error: 'Free AI FAQ drafting is not configured. Create a Groq API key and set GROQ_API_KEY in server/.env (or the API service environment), then restart the API.' };
+
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    const dailyLimit = Math.max(1, Math.min(100, Number(process.env.FAQ_AI_DAILY_LIMIT) || 10));
+    const usage = this.faqAiDailyUsage.get(tenantId);
+    const currentUsage = usage?.date === today ? usage.count : 0;
+    if (currentUsage >= dailyLimit) return { error: `This clinic has reached its ${dailyLimit}-draft daily AI limit. Try again tomorrow.` };
+    this.faqAiDailyUsage.set(tenantId, { date: today, count: currentUsage + 1 });
+
+    const context = this.getVoiceAgent(tenantId).clinic_context;
+    const facts = {
+      address: context.address,
+      services: context.services,
+      doctors: context.doctors,
+      fees: context.fees,
+      languages: context.languages,
+      instructions: context.instructions,
+      existing_faqs: context.faqs,
+    };
+    if (![facts.address, facts.fees, facts.instructions, ...facts.services, ...facts.doctors]
+      .some((value) => typeof value === 'string' && value.trim()) && !facts.existing_faqs.length) {
+      return { error: 'Add clinic-approved information first so AI can draft grounded FAQ suggestions.' };
+    }
+
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify({
+          model: (process.env.GROQ_MODEL || 'openai/gpt-oss-20b').trim(),
+          temperature: 0.2,
+          max_tokens: 900,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: 'Draft up to 5 concise FAQs for a clinic receptionist using only the supplied clinic facts. Never infer policies, prices, availability, medical advice, or facts not explicitly present. Prefer questions that the supplied facts can answer. Do not repeat existing FAQs. Return only a JSON object with an "faqs" array; each item must have string fields "question" and "answer". If the facts do not support a useful FAQ, return an empty array.' },
+            { role: 'user', content: JSON.stringify({ clinic_name: tenant.name, clinic_facts: facts }) },
+          ],
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as any;
+      if (!response.ok) return { error: 'The AI provider could not draft FAQs right now. Please try again later.' };
+      const content = result?.choices?.[0]?.message?.content;
+      const parsed = typeof content === 'string' ? JSON.parse(content) : null;
+      const faqs = Array.isArray(parsed?.faqs) ? parsed.faqs.slice(0, 5).map((faq: any) => ({
+        question: typeof faq?.question === 'string' ? faq.question.trim().slice(0, 300) : '',
+        answer: typeof faq?.answer === 'string' ? faq.answer.trim().slice(0, 1200) : '',
+      })).filter((faq: any) => faq.question && faq.answer) : [];
+      return { faqs };
+    } catch {
+      return { error: 'The AI FAQ request could not be completed. No clinic information was changed.' };
+    }
   }
 
   updateTenantTelephony(tenantId: string, payload: any) {

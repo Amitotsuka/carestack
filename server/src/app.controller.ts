@@ -844,6 +844,17 @@ export class AppController {
     return preview;
   }
 
+  @Post('api/tenant/:tenantId/voice-agent/faq-suggestions')
+  @UseGuards(AccessGuard)
+  @TenantScoped()
+  @Permissions('agents:manage')
+  async generateVoiceAgentFaqSuggestions(@Param('tenantId') tenantId: string) {
+    const result = await this.appService.generateVoiceAgentFaqSuggestions(tenantId);
+    if (!result) throw new NotFoundException('Clinic not found');
+    if ('error' in result) throw new BadGatewayException(result.error);
+    return result;
+  }
+
   @Get('api/tenant/:tenantId/patients')
   @UseGuards(AccessGuard)
   @TenantScoped()

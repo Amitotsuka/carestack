@@ -48,6 +48,13 @@ const PATIENT_TABLE_COLUMNS = [
   { key: 'age', label: 'Age', value: (patient) => patient.age },
   { key: 'status', label: 'Status', value: (patient) => patient.status },
 ];
+const STAFF_TABLE_COLUMNS = [
+  { key: 'id', label: 'ID', value: (member) => member.id },
+  { key: 'name', label: 'Name', value: (member) => member.name },
+  { key: 'email', label: 'Login email', value: (member) => member.email },
+  { key: 'role', label: 'Role', value: (member) => member.role },
+  { key: 'permissions', label: 'Granted access', value: (member) => (member.permissions || []).map((permission) => permission.split(':').join(' ')).join(' · ') || 'No sections assigned' },
+];
 
 function useListPagination(items, resetKey = '') {
   const [page, setPage] = useState(1);
@@ -262,6 +269,7 @@ function App() {
   const [overviewActivityRange, setOverviewActivityRange] = useState('7d');
   const [patientQuery, setPatientQuery] = useState('');
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
+  const [patientDateFilter, setPatientDateFilter] = useState('all');
   const [patientOverviewColumns, setPatientOverviewColumns] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('carestack-patient-overview-columns') || 'null');
@@ -290,12 +298,23 @@ function App() {
     try { return localStorage.getItem('carestack-voice-tool-api-base-url') || API_URL; } catch { return API_URL; }
   });
   const [exotelConnectionStatus, setExotelConnectionStatus] = useState('');
-  const [agentPreviewInput, setAgentPreviewInput] = useState('I want to book an appointment');
-  const [agentPreviewReply, setAgentPreviewReply] = useState('');
-  const [agentPreviewListening, setAgentPreviewListening] = useState(false);
+  const [faqDrafts, setFaqDrafts] = useState([]);
+  const [faqDraftsBusy, setFaqDraftsBusy] = useState(false);
   const [publicPlans, setPublicPlans] = useState([]);
   const [clinicInterests, setClinicInterests] = useState([]);
   const [staff, setStaff] = useState([]);
+  const [staffQuery, setStaffQuery] = useState('');
+  const [staffRoleFilter, setStaffRoleFilter] = useState('all');
+  const [staffPermissionFilter, setStaffPermissionFilter] = useState('all');
+  const [staffColumns, setStaffColumns] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('carestack-staff-table-columns') || 'null');
+      const valid = Array.isArray(saved) ? saved.filter((key) => STAFF_TABLE_COLUMNS.some((column) => column.key === key)) : [];
+      return valid.length ? valid : ['name', 'email', 'role', 'permissions'];
+    } catch {
+      return ['name', 'email', 'role', 'permissions'];
+    }
+  });
   const [staffForm, setStaffForm] = useState({ id: null, name: '', email: '', password: '', permissions: STAFF_PERMISSION_GROUPS.flatMap(({ view, manage }) => [view, ...(manage ? [manage] : [])]) });
   const [staffFormOpen, setStaffFormOpen] = useState(false);
 
@@ -321,6 +340,14 @@ function App() {
       // Keep the current selection for this session if browser storage is unavailable.
     }
   }, [patientOverviewColumns]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('carestack-staff-table-columns', JSON.stringify(staffColumns));
+    } catch {
+      // Keep the current selection for this session if browser storage is unavailable.
+    }
+  }, [staffColumns]);
 
   useEffect(() => {
     const handleExpiredSession = () => {
@@ -688,43 +715,27 @@ function App() {
     }
   };
 
-  const getVoiceAgentPreview = async (message, speakReply = false) => {
+  const generateFaqDrafts = async () => {
     if (!session?.tenant_id) return;
-    setBusy(true); setError('');
+    setFaqDraftsBusy(true); setError(''); setNotice('');
     try {
-      const result = await request(`/api/tenant/${session.tenant_id}/voice-agent/preview`, {
-        method: 'POST', body: JSON.stringify({ caller_message: message }),
-      });
-      setAgentPreviewReply(result.reply);
-      if (window.speechSynthesis && speakReply) {
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(result.reply));
-      }
-    } catch (previewError) { setError(previewError.message); }
-    finally { setBusy(false); }
+      const result = await request(`/api/tenant/${session.tenant_id}/voice-agent/faq-suggestions`, { method: 'POST' });
+      setFaqDrafts(result.faqs || []);
+      if (!result.faqs?.length) setNotice('AI did not find a new FAQ supported by the saved clinic information.');
+    } catch (draftError) { setError(draftError.message || 'FAQ drafts could not be generated.'); }
+    finally { setFaqDraftsBusy(false); }
   };
 
-  const previewVoiceAgent = async (event) => {
-    event.preventDefault();
-    setAgentPreviewListening(false);
-    await getVoiceAgentPreview(agentPreviewInput);
-  };
-
-  const startSpokenAgentPreview = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) { setError('Speech recognition is unavailable in this browser. Use the text preview instead.'); return; }
-    const recognition = new SpeechRecognition();
-    recognition.lang = voiceAgent.timezone === 'Asia/Kolkata' ? 'en-IN' : 'en-US';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.onstart = () => setAgentPreviewListening(true);
-    recognition.onerror = () => { setAgentPreviewListening(false); setError('Microphone preview could not start. Check browser microphone permission or use text preview.'); };
-    recognition.onend = () => setAgentPreviewListening(false);
-    recognition.onresult = (event) => {
-      const message = event.results?.[0]?.[0]?.transcript || '';
-      if (message) { setAgentPreviewInput(message); setAgentPreviewListening(true); getVoiceAgentPreview(message, true); }
-    };
-    recognition.start();
+  const addFaqDraftToClinicContext = (faq) => {
+    const context = voiceAgent.clinic_context || defaultVoiceAgent.clinic_context;
+    const existingFaqs = context.faqs || [];
+    if (existingFaqs.length >= 25) {
+      setError('The clinic FAQ limit has been reached. Remove an existing FAQ before adding another.');
+      return;
+    }
+    setVoiceAgent({ ...voiceAgent, clinic_context: { ...context, faqs: [...existingFaqs, faq] } });
+    setFaqDrafts((drafts) => drafts.filter((draft) => draft !== faq));
+    setNotice('Draft added to the clinic FAQ editor. Review it and save the clinic context to publish it.');
   };
 
   const shareClinicNumber = async () => {
@@ -1467,17 +1478,31 @@ function App() {
       : [patient.id, patient.name, patient.phone, patient.email, patient.age, patient.status];
     const matchesQuery = !query || searchableValues
       .some((value) => String(value || '').toLowerCase().includes(query));
-    return matchesQuery && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
+    const patientBookings = bookings.filter((booking) => String(booking.patient_id || '') === String(patient.id));
+    const hasTodayBooking = patientBookings.some((booking) => booking.appointment_date === clinicToday && !['cancelled', 'no_show'].includes(booking.status));
+    const hasUpcomingBooking = patientBookings.some((booking) => booking.appointment_date >= clinicToday && !['cancelled', 'no_show'].includes(booking.status));
+    const matchesDate = activeView !== 'overview' || patientDateFilter === 'all'
+      || (patientDateFilter === 'today' && hasTodayBooking)
+      || (patientDateFilter === 'upcoming' && hasUpcomingBooking);
+    return matchesQuery && matchesDate && (patientStatusFilter === 'all' || patient.status === patientStatusFilter);
+  });
+  const filteredStaff = staff.filter((member) => {
+    const query = staffQuery.trim().toLowerCase();
+    const searchable = STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => column.value(member));
+    const matchesQuery = !query || searchable.some((value) => String(value || '').toLowerCase().includes(query));
+    const matchesRole = staffRoleFilter === 'all' || member.role === staffRoleFilter;
+    const matchesPermission = staffPermissionFilter === 'all' || (member.permissions || []).includes(staffPermissionFilter);
+    return matchesQuery && matchesRole && matchesPermission;
   });
   const displayedPatients = [...filteredPatients].sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')));
   const clinicInterestPagination = useListPagination(clinicInterests, `leads:${activeView}`);
   const tenantPagination = useListPagination(tenants, `tenants:${activeView}`);
   const subscriptionTenantPagination = useListPagination(tenants, `subscriptions:${activeView}`);
   const planPagination = useListPagination(plans, `plans:${activeView}`);
-  const staffPagination = useListPagination(staff, `staff:${activeView}:${session?.tenant_id || ''}`);
+  const staffPagination = useListPagination(filteredStaff, `staff:${activeView}:${session?.tenant_id || ''}:${staffQuery}:${staffRoleFilter}:${staffPermissionFilter}:${staffColumns.join(',')}`);
   const doctorPagination = useListPagination(tenantData?.doctors || [], `doctors:${activeView}:${session?.tenant_id || ''}`);
   const appointmentPagination = useListPagination(filteredBookings, `appointments:${activeView}:${appointmentQuery}:${appointmentStatusFilter}:${appointmentDateFilter}`);
-  const patientPagination = useListPagination(activeView === 'overview' ? displayedPatients : filteredPatients, `patients:${activeView}:${patientQuery}:${patientStatusFilter}:${patientOverviewColumns.join(',')}`);
+  const patientPagination = useListPagination(activeView === 'overview' ? displayedPatients : filteredPatients, `patients:${activeView}:${patientQuery}:${patientStatusFilter}:${patientDateFilter}:${patientOverviewColumns.join(',')}`);
   const doctorWorkloadPagination = useListPagination(analytics.doctor_workload, `doctor-workload:${activeView}`);
   const planBreakdownPagination = useListPagination(planBreakdown, `plan-breakdown:${activeView}`);
   const clinicDoctors = [...new Set([...(tenantData?.doctors || []).filter((doctor) => doctor.status === 'active').map((doctor) => doctor.name), bookingForm.doctor_name].filter(Boolean))];
@@ -1909,12 +1934,14 @@ function App() {
 
               {!superAdmin && activeView === 'agents' && (clinicAdmin ? <div className="row g-4">
                 <div className="col-12"><section className="tenant-insight-panel">
-                  <div className="admin-panel-heading"><div><h3>Try the booking agent</h3><p>Preview how it answers using this clinic’s current availability settings. This test needs no phone number or Exotel credentials.</p></div><span className="status-pill confirmed">Agent preview</span></div>
-                  <form onSubmit={previewVoiceAgent} className="row g-2"><div className="col-md-6"><label className="visually-hidden" htmlFor="agent-preview-input">What does the caller say?</label><input id="agent-preview-input" className="form-control" value={agentPreviewInput} onChange={(event) => setAgentPreviewInput(event.target.value)} placeholder="Example: I need to book an appointment" /></div><div className="col-md-3"><button className="btn btn-primary w-100" disabled={busy || !agentPreviewInput.trim()}>{busy ? 'Checking…' : 'Preview text reply'}</button></div><div className="col-md-3"><button type="button" className="btn btn-outline-primary w-100" disabled={busy || agentPreviewListening} onClick={startSpokenAgentPreview}>{agentPreviewListening ? 'Listening…' : 'Speak to preview'}</button></div></form>
-                  {agentPreviewReply && <div className="alert alert-info mt-3 mb-0" role="status"><strong>Agent:</strong> {agentPreviewReply}</div>}
-                  <p className="small text-muted mt-3 mb-0">This no-key preview uses browser speech recognition and speech playback when supported. It is a rules-based test, not a live phone call; it does not save audio or book an appointment in Carestac.</p>
+                  <div className="admin-panel-heading"><div><h3>AI clinic FAQ assistant</h3><p>Draft helpful caller questions and answers from this clinic’s saved information.</p></div><span className="status-pill confirmed">AI assisted</span></div>
+                  <div className="d-flex flex-wrap align-items-center justify-content-between gap-3"><p className="small text-muted mb-0">Suggestions are drafts. AI uses clinic facts only—no patient data or call transcripts—and will not publish anything automatically. Uses the server’s Groq free tier, with a daily clinic limit.</p><button type="button" className="btn btn-primary" disabled={faqDraftsBusy} onClick={generateFaqDrafts}>{faqDraftsBusy ? 'Drafting FAQs…' : 'Generate FAQ drafts'}</button></div>
+                  {faqDrafts.length > 0 && <div className="agenda-list mt-3">{faqDrafts.map((faq, index) => <div className="agenda-row align-items-start" key={`${faq.question}-${index}`}>
+                    <span className="agenda-index" aria-hidden="true">Q</span><div><strong>{faq.question}</strong><small>{faq.answer}</small></div><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => addFaqDraftToClinicContext(faq)}>Add draft</button>
+                  </div>)}</div>}
+                  <p className="small text-muted mt-3 mb-0">Review each answer for accuracy. Added drafts appear in the FAQ editor below; click “Save clinic agent context” to make them available to your booking agent.</p>
                 </section></div>
-                <div className="col-12"><section className="tenant-insight-panel clinic-call-number">
+                <div className="col-12"><section id="clinic-call-number" className="tenant-insight-panel clinic-call-number">
                   <div><p className="section-kicker mb-2">YOUR CLINIC’S AI BOOKING LINE</p><h3 className="mb-1">{clinicCallingNumber || 'Number not assigned yet'}</h3><p className="text-muted mb-0">{clinicCallingNumber ? `Dedicated to ${displayedTenant}. ${tenantData?.telephony?.enabled ? (tenantData.telephony.voice_provider === 'exotel_voicebot' ? 'Exotel Voicebot inbound is marked live.' : 'Sarvam inbound is active.') : 'Ask your platform administrator to finish the inbound flow setup before sharing it as live.'}` : 'Your platform administrator assigns a unique clinic number in Super Admin.'}</p></div>
                   <div className="d-flex gap-2 flex-wrap">{clinicCallingNumber && <><a className="btn btn-outline-primary" href={`tel:${clinicCallingNumber}`}>Call this line</a><button type="button" className="btn btn-outline-primary" onClick={shareClinicNumber}>Copy share message</button><a className="btn btn-success" href={`https://wa.me/?text=${encodeURIComponent(`Call ${displayedTenant} to book an appointment: ${clinicCallingNumber}`)}`} target="_blank" rel="noreferrer">Share on WhatsApp</a></>}</div>
                 </section></div>
@@ -1931,7 +1958,7 @@ function App() {
                     <div className="col-12"><button type="button" className="btn btn-primary" disabled={busy} onClick={saveVoiceAgent}>{busy ? 'Saving…' : 'Save clinic agent context'}</button></div>
                   </div>; })()}
                 </section></div>
-                <div className="col-xl-5"><section className="tenant-insight-panel h-100">
+                <div className="col-xl-5"><section id="agent-settings" className="tenant-insight-panel h-100">
                   <div className="admin-panel-heading"><div><h3>Clinic voice agent</h3><p>Set when the inbound booking agent can answer calls.</p></div><span className={`status-pill ${voiceAgent.enabled ? 'confirmed' : 'cancelled'}`}>{voiceAgent.enabled ? 'Enabled' : 'Paused'}</span></div>
                   <form onSubmit={saveVoiceAgent}>
                     <label className="d-flex align-items-center justify-content-between gap-3 py-3 border-bottom"><span><strong>Accept AI booking calls</strong><small className="d-block text-muted">Pause call handling without removing your setup.</small></span><input type="checkbox" className="form-check-input" checked={voiceAgent.enabled} onChange={(event) => setVoiceAgent({ ...voiceAgent, enabled: event.target.checked })} /></label>
@@ -2056,8 +2083,21 @@ function App() {
                     </form>
                   </div>
                 </section></div>
-                <div className="col-12"><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Staff accounts</h3><p>{staff.length} receptionist {staff.length === 1 ? 'account' : 'accounts'} for this clinic</p></div></div>
-                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr><th>Name</th><th>Login</th><th>Granted access</th><th className="text-end">Actions</th></tr></thead><tbody>{staff.length ? staffPagination.items.map((member) => <tr key={member.id}><td className="fw-semibold">{member.name}<small className="d-block text-muted">Receptionist</small></td><td>{member.email}</td><td>{member.permissions.length ? member.permissions.map((permission) => permission.split(':').join(' ')).join(' · ') : <span className="text-muted">No sections assigned</span>}</td><td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', permissions: member.permissions || [] }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit access</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan="4" className="text-muted py-4">No staff accounts yet. Add a receptionist above.</td></tr>}</tbody></table></div>
+                <div className="col-12"><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Staff accounts</h3><p>{filteredStaff.length} of {staff.length} receptionist {staff.length === 1 ? 'account' : 'accounts'} for this clinic</p></div></div>
+                  <div className="workspace-table-tools">
+                    <div className="workspace-search"><label className="visually-hidden" htmlFor="staff-search">Search staff accounts</label><span aria-hidden="true">⌕</span><input id="staff-search" className="form-control" placeholder={`Search ${STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => column.label.toLowerCase()).join(', ')}`} value={staffQuery} onChange={(event) => setStaffQuery(event.target.value)} /></div>
+                    <label className="visually-hidden" htmlFor="staff-role-filter">Filter staff by role</label><select id="staff-role-filter" className="form-select workspace-status-filter" value={staffRoleFilter} onChange={(event) => setStaffRoleFilter(event.target.value)}><option value="all">All roles</option><option value="receptionist">Receptionist</option></select>
+                    <label className="visually-hidden" htmlFor="staff-permission-filter">Filter by granted access</label><select id="staff-permission-filter" className="form-select workspace-status-filter" value={staffPermissionFilter} onChange={(event) => setStaffPermissionFilter(event.target.value)}><option value="all">Any access</option>{STAFF_PERMISSION_GROUPS.flatMap(({ label, view, manage }) => [[view, `${label} · View`], ...(manage ? [[manage, `${label} · Manage`]] : [])]).map(([permission, label]) => <option key={permission} value={permission}>{label}</option>)}</select>
+                    <span className="workspace-result-count">{filteredStaff.length} of {staff.length} accounts</span>
+                    <details className="patient-column-picker">
+                      <summary className="btn btn-sm btn-outline-secondary">Choose columns</summary>
+                      <div className="patient-column-picker-menu" role="group" aria-label="Choose staff table columns">
+                        {STAFF_TABLE_COLUMNS.map((column) => <label key={column.key}><input type="checkbox" checked={staffColumns.includes(column.key)} disabled={staffColumns.length === 1 && staffColumns.includes(column.key)} onChange={() => setStaffColumns((current) => current.includes(column.key) ? current.filter((key) => key !== column.key) : [...current, column.key])} /> {column.label}</label>)}
+                      </div>
+                    </details>
+                    {(staffQuery || staffRoleFilter !== 'all' || staffPermissionFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setStaffQuery(''); setStaffRoleFilter('all'); setStaffPermissionFilter('all'); }}>Clear filters</button>}
+                  </div>
+                  <div className="table-responsive"><table className="table align-middle mb-0"><thead><tr>{STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => <th key={column.key}>{column.label}</th>)}<th className="text-end">Actions</th></tr></thead><tbody>{filteredStaff.length ? staffPagination.items.map((member) => <tr key={member.id}>{STAFF_TABLE_COLUMNS.filter((column) => staffColumns.includes(column.key)).map((column) => <td key={column.key}>{column.key === 'role' ? <span className="text-capitalize">{String(member.role || '').replace('_', ' ')}</span> : column.key === 'permissions' ? column.value(member) === 'No sections assigned' ? <span className="text-muted">No sections assigned</span> : column.value(member) : column.value(member) || '-'}</td>)}<td className="text-end text-nowrap"><button className="btn btn-sm btn-outline-primary me-2" onClick={() => { setStaffForm({ id: member.id, name: member.name, email: member.email, password: '', permissions: member.permissions || [] }); setStaffFormOpen(true); window.setTimeout(() => document.getElementById('staff-account-fields')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Edit access</button><button className="btn btn-sm btn-outline-danger" onClick={() => removeStaff(member)}>Remove</button></td></tr>) : <tr><td colSpan={staffColumns.length + 1} className="text-muted py-4">{staff.length ? 'No staff accounts match those filters.' : 'No staff accounts yet. Add a receptionist above.'}</td></tr>}</tbody></table></div>
                   <ListPagination pagination={staffPagination} label="staff accounts" />
                 </section></div>
               </div>}
@@ -2164,6 +2204,7 @@ function App() {
                   </div>}
                   {(activeView === 'patients' || activeView === 'overview') && <div className="workspace-table-tools">
                     <div className="workspace-search"><label className="visually-hidden" htmlFor="patient-search">Search patients</label><span aria-hidden="true">⌕</span><input id="patient-search" className="form-control" placeholder={activeView === 'overview' ? `Search ${PATIENT_TABLE_COLUMNS.filter((column) => patientOverviewColumns.includes(column.key)).map((column) => column.label.toLowerCase()).join(', ')}` : 'Search name, phone, email, or patient ID'} value={patientQuery} onChange={(event) => setPatientQuery(event.target.value)} /></div>
+                    {activeView === 'overview' && <div className="workspace-filter-pills" role="group" aria-label="Recent patient appointment date range">{[['today', 'Today'], ['upcoming', 'Upcoming'], ['all', 'All patients']].map(([value, label]) => <button type="button" key={value} className={patientDateFilter === value ? 'active' : ''} aria-pressed={patientDateFilter === value} onClick={() => setPatientDateFilter(value)}>{label}</button>)}</div>}
                     <label className="visually-hidden" htmlFor="patient-status-filter">Filter patients by status</label><select id="patient-status-filter" className="form-select workspace-status-filter" value={patientStatusFilter} onChange={(event) => setPatientStatusFilter(event.target.value)}><option value="all">All patients</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
                     <span className="workspace-result-count">{filteredPatients.length} of {patients.length} patients</span>
                     {activeView === 'overview' && <>
@@ -2173,7 +2214,7 @@ function App() {
                           {PATIENT_TABLE_COLUMNS.map((column) => <label key={column.key}><input type="checkbox" checked={patientOverviewColumns.includes(column.key)} disabled={patientOverviewColumns.length === 1 && patientOverviewColumns.includes(column.key)} onChange={() => setPatientOverviewColumns((current) => current.includes(column.key) ? current.filter((key) => key !== column.key) : [...current, column.key])} /> {column.label}</label>)}
                         </div>
                       </details>
-                      {(patientQuery || patientStatusFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setPatientQuery(''); setPatientStatusFilter('all'); }}>Clear filters</button>}
+                      {(patientQuery || patientStatusFilter !== 'all' || patientDateFilter !== 'all') && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setPatientQuery(''); setPatientStatusFilter('all'); setPatientDateFilter('all'); }}>Clear filters</button>}
                     </>}
                   </div>}
                   <div className="table-responsive">
